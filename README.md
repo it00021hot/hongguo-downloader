@@ -1,8 +1,8 @@
-# 🎬 红果短剧下载器（Windows 桌面版）
+# 🎬 红果短剧下载器（Windows / macOS 桌面版）
 
 <div align="center">
 
-![平台](https://img.shields.io/badge/平台-Windows%2010%20%2F%2011%20x64-blue?style=for-the-badge&logo=windows)
+![平台](https://img.shields.io/badge/平台-Windows%20%2F%20macOS-blue?style=for-the-badge)
 ![技术栈](https://img.shields.io/badge/技术栈-Electron%20%2B%20React%20%2B%20Node.js-47848F?style=for-the-badge&logo=electron)
 ![协议](https://img.shields.io/badge/开源协议-GPL--3.0-orange?style=for-the-badge)
 
@@ -16,7 +16,7 @@
 
 ## 📖 简介
 
-面向 **红果短剧（番茄小说短剧频道 / novelread 系）** 的 Windows 桌面工具。
+面向 **红果短剧（番茄小说短剧频道 / novelread 系）** 的 Windows 与 macOS 桌面工具。
 
 采用 **Electron + React + Node.js** 架构，内置字节系短剧 API 协议与
 **CENC-AES-CTR 原生流式解密引擎**：可浏览/搜索剧集、按选集批量下载并自动解密为
@@ -196,6 +196,7 @@
 ### 环境要求
 
 - Windows 10 / 11 x64
+- macOS 10.15+（Intel x64 / Apple Silicon arm64）
 - Node.js >= 18（推荐 20.x / 22.x）
 - npm >= 9
 
@@ -207,6 +208,8 @@ cd hongguo-downloader
 npm install
 npm run dev        # 同时启动 Vite 前端与 Electron 客户端
 ```
+
+macOS 上执行 `npm run dev:mac` 启动。首次运行前执行 `npm install`；启动脚本会准备当前架构的 FFmpeg/FFprobe，供合并与兼容转码使用。
 
 ### 打包构建
 
@@ -224,6 +227,18 @@ npm run build:dir         # 仅免安装目录 dist/win-unpacked
 npm run build:portable    # 便携单文件 exe
 npm run zip               # 仅重新压缩已有的 win-unpacked
 ```
+
+### macOS 打包
+
+在目标 Mac 上执行（Intel Mac 生成 x64 包，Apple Silicon 生成 arm64 包）：
+
+```sh
+npm install
+npm run build:mac          # 生成 DMG 和 ZIP 到 dist/
+npm run build:mac:dir      # 只生成未压缩的 .app 目录
+```
+
+macOS 的 FFmpeg/FFprobe 会通过 `setup-ffmpeg.js` 按当前机器架构准备并随包分发。首次在其他 Mac 打开时，未签名应用可能需要在系统设置的「隐私与安全性」中允许打开；正式公开分发需要 Apple Developer ID 签名和公证。
 
 ### 产物对比
 
@@ -266,6 +281,25 @@ gh release create v1.1.0 `
 播放时会自动检测，若解不出画面则用 ffmpeg 转码为 H.264 后播放（首次转码需几秒，之后走缓存）。
 
 也可在播放页手动点「兼容模式」确认开关状态，或点击画面上的「转码后播放」。
+
+### 拉不到剧集 / 接口返回空响应
+
+官方 App 接口要求每个请求携带 `x-gorgon` / `x-argus` / `x-ladon` / `x-helios` /
+`x-medusa` 五个签名头。**签名缺失或算错时，服务端不报错，而是返回
+`HTTP 200` + `0 字节`**——只看状态码会误判成成功。
+
+排查用这两个脚本：
+
+```bash
+node scripts/probe-api.js [seriesId] [vid]   # 逐端点看字节数与集数
+node scripts/verify-episode.js <vid>          # 单集端到端：取流→派生密钥→下载→解密
+```
+
+签名实现见 `src/native/signer/README.md`。若上游调整了算法，需要按该目录的
+约束更新 `constants.js`（**常量不能改**）。
+
+另一个常见坑：视频直链所在的 CDN 对**任何带 `Referer` 的请求直接 403**。
+下载直链时只带 App UA，不要带 Referer。
 
 ### 合并出来的大文件拖进度条会卡
 
@@ -325,8 +359,18 @@ Chromium 对超长 HEVC 视频的 seek 支持有限。合并文件本身是完�
 │   ├── index.css                 # 全局样式与主题变量
 │   ├── store.js                  # 本地持久化（设置 / 任务 / 剧集档案 / 播放进度 / 合并记录）
 │   ├── native/
-│   │   └── hongguo.js            # 核心协议：API 解析、spade_a 密钥派生、
-│   │                             #   CENC-AES-CTR 解密（文件版 + 内存版）
+│   │   ├── hongguo.js            # 核心协议：API 解析、spade_a 密钥派生、
+│   │   │                         #   CENC-AES-CTR 解密（文件版 + 内存版）
+│   │   └── signer/               # 字节系请求签名（详见该目录 README.md）
+│   │       ├── index.js          #   对外入口：signPost / signGet
+│   │       ├── device.js         #   设备指纹（须与 UA 成对使用）
+│   │       ├── constants.js      #   算法魔数常量（勿改）
+│   │       ├── primitives.js     #   位运算 / 字节序 / SM3 / 变种 MD5 原语
+│   │       ├── protobuf.js       #   极简 protobuf 编码
+│   │       ├── xgorgon.js        #   x-gorgon
+│   │       ├── xargus.js         #   x-argus（f13 三分支哈希）
+│   │       ├── medusa.js         #   x-medusa / x-helios（含 AES 变体）
+│   │       └── README.md         #   用法与约束
 │   └── components/
 │       ├── Browse.jsx            # 浏览页：分类 / 题材 / 分页 / 详情抽屉
 │       ├── SearchPanel.jsx       # 搜索页（内嵌浏览器嗅探）
@@ -341,9 +385,13 @@ Chromium 对超长 HEVC 视频的 seek 支持有限。合并文件本身是完�
 │   ├── setup-winCodeSign.js      # 预解压 winCodeSign，绕过符号链接限制
 │   ├── make-zip.js               # 打绿色版 zip（含顶层文件夹）
 │   ├── prepare-release-assets.js # 为 GitHub Release 生成 ASCII 命名的资产
+│   ├── probe-api.js              # 调试：逐端点验证签名是否生效（看字节数）
+│   ├── verify-episode.js         # 调试：单集端到端可下载性（取流→派生→下载→解密）
+│   ├── diagnose-cdn.js           # 调试：CDN 403 归因（区分缺请求头与权益拒绝）
 │   └── verify-best-def.js        # 调试脚本：验证清晰度选流逻辑（parseModelVideo）
 ├── build/
-│   ├── icon.png                  # 应用图标
+│   ├── icon.png                  # Windows 应用图标
+│   ├── icon.icns                 # macOS 应用图标
 │   └── ffmpeg/                   # 内置 ffmpeg
 │                                 #   二进制由 setup-ffmpeg.js 生成（不入库）
 │                                 #   许可文本（COPYING.* / LICENSE.md / FFMPEG-NOTICE.txt）随源码入库
@@ -360,7 +408,8 @@ Chromium 对超长 HEVC 视频的 seek 支持有限。合并文件本身是完�
 
 1. 本工具仅供**学习交流与个人备份**使用，严禁用于商业盗版、非法传播或任何侵犯第三方权益的行为。
 2. 红果短剧及番茄系平台拥有作品的全部版权，通过本软件获取的内容版权仍归原平台及创作者所有。
-3. 平台接口策略可能随时调整，若解析失效请关注上游仓库更新。
+3. 平台接口策略可能随时调整。若解析失效，先跑 `scripts/probe-api.js` 确认是
+   签名失配还是接口下线；签名失配需按 `src/native/signer/README.md` 的约束更新。
 4. 使用本软件产生的一切后果由使用者自行承担。
 
 ---

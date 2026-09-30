@@ -38,3 +38,6 @@ yarn-debug.log*
 # 本地配置
 config.json
 settings.json
+
+# macOS 系统文件
+.DS_Store

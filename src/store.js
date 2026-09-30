@@ -17,7 +17,19 @@ function loadCache() {
       cache = JSON.parse(fs.readFileSync(dataFile, 'utf8'));
     }
   } catch (e) {
-    console.error('[Store] 读取数据文件失败，使用空数据:', e.message);
+    // 解析失败说明文件已损坏（写一半掉电、被外部工具改坏等）。
+    // 这里绝不能直接丢掉：先备份一份，用户还能手工捞回下载记录。
+    console.error('[Store] 读取数据文件失败，已备份并使用空数据:', e.message);
+    try {
+      if (fs.existsSync(dataFile)) {
+        const backup = `${dataFile}.corrupt-${Date.now()}`;
+        fs.renameSync(dataFile, backup);
+        console.error(`[Store] 损坏文件已备份到: ${backup}`);
+      }
+    } catch (be) {
+      console.error('[Store] 备份损坏文件失败:', be.message);
+    }
+    cache = {};
   }
   if (!cache || typeof cache !== 'object') cache = {};
   if (!Array.isArray(cache.tasks)) cache.tasks = [];
@@ -25,13 +37,28 @@ function loadCache() {
   return cache;
 }
 
+/**
+ * 原子写：先写同目录临时文件，再 rename 覆盖。
+ *
+ * 直接 writeFileSync 会先把目标文件截断，若此刻进程被杀 / 掉电，
+ * data.json 就停在「写了一半」的状态，下次启动解析失败 → 下载记录、
+ * 设置、剧集档案全部归零。rename 在同一文件系统内是原子的，
+ * 读到的永远是「改动前」或「改动后」的完整文件。
+ */
 function flush() {
   if (!dataFile) return;
+  const tmp = `${dataFile}.tmp`;
   try {
     fs.mkdirSync(path.dirname(dataFile), { recursive: true });
-    fs.writeFileSync(dataFile, JSON.stringify(cache || {}, null, 2), 'utf8');
+    fs.writeFileSync(tmp, JSON.stringify(cache || {}, null, 2), 'utf8');
+    fs.renameSync(tmp, dataFile);
   } catch (e) {
     console.error('[Store] 写入数据文件失败:', e.message);
+    try {
+      if (fs.existsSync(tmp)) fs.unlinkSync(tmp);
+    } catch (_) {
+      /* 临时文件清理失败不影响主流程 */
+    }
   }
 }
 

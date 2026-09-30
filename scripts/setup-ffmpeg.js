@@ -3,8 +3,8 @@
  *
  * 为什么需要：
  *   一键合并功能依赖 ffmpeg，但它体积较大（约 167MB），不纳入版本管理。
- *   clone 仓库后执行一次本脚本，即可把 ffmpeg.exe / ffprobe.exe 放到
- *   build/ffmpeg/，之后 `npm run build` 会通过 extraResources 打进安装包。
+ *   clone 仓库后执行一次本脚本，即可把 ffmpeg / ffprobe 放到
+ *   build/ffmpeg/，之后 electron-builder 会通过 extraResources 打进安装包。
  *
  * 若下载失败，也可以自行从 https://www.gyan.dev/ffmpeg/builds/ 下载
  * essentials 版，把 bin 目录里的 ffmpeg.exe 与 ffprobe.exe 复制到
@@ -63,6 +63,53 @@ function download(url, dest, redirects = 0) {
 }
 
 (async () => {
+  fs.mkdirSync(DEST, { recursive: true });
+
+  if (process.platform === 'darwin') {
+    const ffmpegSource = require('ffmpeg-static');
+    const ffprobeInstaller = require('ffprobe-installer');
+    const ffprobeSource = ffprobeInstaller.path;
+    if (!ffmpegSource || !ffprobeSource || !fs.existsSync(ffmpegSource) || !fs.existsSync(ffprobeSource)) {
+      throw new Error(`未找到当前 macOS 架构 (${process.arch}) 对应的 ffmpeg / ffprobe`);
+    }
+
+    const ffmpegDest = path.join(DEST, 'ffmpeg');
+    const ffprobeDest = path.join(DEST, 'ffprobe');
+    const archStamp = path.join(DEST, '.darwin-arch');
+    if (
+      fs.existsSync(ffmpegDest) && fs.existsSync(ffprobeDest) &&
+      fs.existsSync(path.join(DEST, 'FFPROBE-NOTICE.txt')) &&
+      fs.existsSync(archStamp) &&
+      fs.readFileSync(archStamp, 'utf8').trim() === process.arch
+    ) {
+      console.log(`macOS ${process.arch} ffmpeg 已就绪：${DEST}`);
+      return;
+    }
+    fs.copyFileSync(ffmpegSource, ffmpegDest);
+    fs.copyFileSync(ffprobeSource, ffprobeDest);
+    fs.chmodSync(ffmpegDest, 0o755);
+    fs.chmodSync(ffprobeDest, 0o755);
+    fs.writeFileSync(archStamp, process.arch + '\n');
+    const ffmpegLicense = path.join(path.dirname(ffmpegSource), 'ffmpeg.LICENSE');
+    const ffmpegReadme = path.join(path.dirname(ffmpegSource), 'ffmpeg.README');
+    if (fs.existsSync(ffmpegLicense)) fs.copyFileSync(ffmpegLicense, path.join(DEST, 'LICENSE-ffmpeg-static.txt'));
+    if (fs.existsSync(ffmpegReadme)) fs.copyFileSync(ffmpegReadme, path.join(DEST, 'README-ffmpeg-static.md'));
+    const ffprobeReadme = path.join(path.dirname(ffprobeSource), 'README.md');
+    if (fs.existsSync(ffprobeReadme)) fs.copyFileSync(ffprobeReadme, path.join(DEST, 'README-ffprobe-installer.md'));
+    const ffprobePackagePath = path.join(path.dirname(ffprobeSource), 'package.json');
+    const ffprobePackage = JSON.parse(fs.readFileSync(ffprobePackagePath, 'utf8'));
+    fs.writeFileSync(path.join(DEST, 'FFPROBE-NOTICE.txt'), [
+      'FFprobe macOS binary',
+      `Package: ${ffprobePackage.name}@${ffprobePackage.version}`,
+      `Build: ${ffprobeInstaller.version}`,
+      `License: ${ffprobePackage.license}`,
+      `Source: ${ffprobePackage.homepage || 'https://evermeet.cx/ffmpeg/'}`,
+      '',
+    ].join('\n'));
+    console.log(`macOS ${process.arch} ffmpeg 已就绪：${DEST}`);
+    return;
+  }
+
   const ffmpegExe = path.join(DEST, 'ffmpeg.exe');
   const ffprobeExe = path.join(DEST, 'ffprobe.exe');
 
@@ -79,7 +126,6 @@ function download(url, dest, redirects = 0) {
     return;
   }
 
-  fs.mkdirSync(DEST, { recursive: true });
   fs.mkdirSync(path.dirname(ZIP), { recursive: true });
 
   console.log('正在下载 ffmpeg essentials（约 88MB）…');
@@ -119,6 +165,6 @@ function download(url, dest, redirects = 0) {
   console.log('  ' + ffprobeExe + '  ' + (fs.statSync(ffprobeExe).size / 1048576).toFixed(1) + 'MB');
 })().catch((e) => {
   console.error('失败：' + e.message);
-  console.error('可手动下载 ffmpeg essentials 并把 ffmpeg.exe / ffprobe.exe 放进 build/ffmpeg/');
+  console.error('请确认 build/ffmpeg/ 中已准备好当前平台的 ffmpeg 与 ffprobe。');
   process.exit(1);
 });

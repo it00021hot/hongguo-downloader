@@ -1,0 +1,5 @@
+FFprobe macOS binary
+Package: @ffprobe-installer/darwin-x64@5.1.0
+Build: 20230213-f8d6d0f
+License: GPL-3.0
+Source: https://evermeet.cx/ffmpeg/
