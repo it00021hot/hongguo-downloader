@@ -2,9 +2,16 @@ const axios = require('axios');
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const signer = require('./signer');
 
-const API = "https://api5-normal-sinfonlineb.fqnovel.com";
-const UA = "com.phoenix.read/71532 (Linux; U; Android 9; SM-N9860; Build/PQ3A.190705.10241111;tt-ok/3.12.13.20)";
+/**
+ * 视频 CDN 的 Referer。
+ *
+ * ⚠️ 实测：CDN（qznovelvod.com）对**任何**带 Referer 的请求直接返回 403
+ *    （openresty 拒绝），而不带 Referer 或只带 App UA 都能正常 206。
+ *    所以 App 接口取到的直链**必须不带 Referer**；
+ *    这个常量只保留给官网兜底链路和 main.js 的 403 重试用。
+ */
 const VIDEO_REFERER = "https://novelquickapp.com/";
 
 // ===== 官网网页版数据源（官方 App 接口不可用时的兜底）=====
@@ -13,47 +20,6 @@ const VIDEO_REFERER = "https://novelquickapp.com/";
 const SITE_ORIGIN = "https://hongguoduanju.com";
 const WEB_UA = "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36";
 const WEB_REFERER = SITE_ORIGIN + "/";
-
-const COMMON_QUERY = {
-  klink_egdi: "AAI29o4dI-eMiO73_SRSbZ_0By1v3fUSriNeu8-L951MoXhWT88pzj5B",
-  iid: "3788260546453235",
-  device_id: "538083340353620",
-  ac: "wifi",
-  channel: "oppo_8662_64",
-  aid: "8662",
-  app_name: "novelread",
-  version_code: "71532",
-  version_name: "7.1.5.32",
-  device_platform: "android",
-  os: "android",
-  ssmix: "a",
-  device_type: "SM-N9860",
-  device_brand: "Samsung",
-  language: "zh",
-  os_api: "28",
-  os_version: "9",
-  manifest_version_code: "71532",
-  resolution: "900*1600",
-  dpi: "320",
-  update_version_code: "71532",
-  host_abi: "arm64-v8a",
-  dragon_device_type: "pad",
-  pv_player: "71532",
-  compliance_status: "0",
-  need_personal_recommend: "1",
-  player_so_load: "1",
-  is_android_pad_screen: "0",
-  rom_version: "PQ3A.190705.10241111+release-keys",
-  cdid: "b4f93387-5319-4134-aab9-2cd4e9279b8f",
-};
-
-const HEADERS = {
-  "User-Agent": UA,
-  "Accept-Encoding": "gzip",
-  "Accept": "application/json; charset=utf-8,application/x-protobuf",
-  "Content-Type": "application/json; charset=utf-8",
-  "Host": "api5-normal-sinfonlineb.fqnovel.com",
-};
 
 const DETAIL_BIZ_PARAM = {
   detail_page_version: 0,
@@ -79,20 +45,29 @@ const MODEL_BIZ_PARAM = {
 };
 
 /**
- * API 调用封装
+ * 调用官方 App 接口（带完整字节系签名）。
+ *
+ * 签名是「URL + body 字节 + 时间戳」的联合函数，因此 body 必须先序列化成
+ * Buffer 再交给签名器，签名后不能再改动任何一个字节。
+ *
+ * @param {string} apiPath   以 '/' 开头的接口路径
+ * @param {object} payload   请求体（普通对象）
+ * @param {number} retries   重试次数
  */
-async function apiCall(apiPath, body, retries = 3) {
-  const q = { ...COMMON_QUERY, _rticket: Date.now().toString() };
+async function apiCall(apiPath, payload, retries = 3) {
+  const body = Buffer.from(JSON.stringify(payload));
   for (let i = 0; i < retries; i++) {
     const signal = {}; // 供错误信息回溯（HTTP 状态 / 字节数 / CDN logid）
     try {
-      const res = await axios.post(API + apiPath, body, {
-        params: q,
-        headers: HEADERS,
+      // 每次重试重新签名：时间戳和 _rticket 变了，签名必须跟着变
+      const { url, headers } = signer.signPost(apiPath, body);
+      const res = await axios.post(url, body, {
+        headers,
         timeout: 25000,
         // 200 + 空 body 时 axios 会解析成 ''，这里统一按原始字节处理便于判断
         responseType: 'arraybuffer',
         transformResponse: [(d) => d],
+        validateStatus: () => true,
       });
       signal.status = res.status;
       signal.logid = res.headers?.['x-tt-logid'];
@@ -102,7 +77,7 @@ async function apiCall(apiPath, body, retries = 3) {
         throw new Error(`HTTP ${res.status}`);
       }
       if (buf.length === 0) {
-        // 服务端返回 200 但无任何内容：网关在做业务处理前就丢弃了请求
+        // 服务端返回 200 但无任何内容：签名被拒或网关在业务处理前丢弃了请求
         const err = new Error(
           `接口返回空响应（HTTP 200，0 字节）${signal.logid ? ' logid=' + signal.logid : ''}`
         );
@@ -392,8 +367,11 @@ async function fetchPlayUrlSingle(vid, sid) {
     const item = j?.data?.[vid] || {};
     const [url, spadeA, codec] = parseModelVideo(item.video_model);
     if (url) return { url, spadeA, codec, source: 'api' };
+    console.warn('[Hongguo] video_model 未给出可用流，改用官网兜底');
   } catch (e) {
-    // 落到下面的官网兜底
+    // 必须打印：签名失败时服务端返回 200+0 字节，不记录的话会静默降级到官网，
+    // 表现为「官网 404」，极易误判成内容受限而查错方向。
+    console.warn(`[Hongguo] video_model API 失败，改用官网兜底: ${e.message}`);
   }
   // 官方 App 接口不可用时，改用官网内嵌的 MP4 直链（明文，无需解密）
   try {
@@ -676,16 +654,10 @@ function rebuildMoov(data, moovOff, moovSize, top) {
 }
 
 /**
- * 解密 CENC-AES-CTR 加密的 MP4（内存版）
- * 输入一个完整的加密 MP4 Buffer，返回解密并重建过 moov 的 Buffer。
- * 注意：会就地修改传入的 Buffer（调用方应独占它）。
+ * 从 moov 的样本表（stsz/stco/stsc/senc）算出每轨样本的偏移、大小和 IV。
+ * 注意：chunk 偏移读的是 stco 里的原始值，必须在 rebuildMoov 改写 stco 之前调用。
  */
-function decryptMp4Buffer(data, key) {
-  const total = data.length;
-  const top = parseBoxes(data, 0, total);
-  const moov = top.find(b => b.typ === 'moov');
-  if (!moov) throw new Error('no moov box found in MP4');
-
+function collectSampleTable(data, top) {
   function getBox(boxes, typ) {
     return (boxes || []).find(b => b.typ === typ);
   }
@@ -768,6 +740,21 @@ function decryptMp4Buffer(data, key) {
 
     trackInfo.push({ sizes, offs: sampleOffs, ivs, stco });
   }
+  return trackInfo;
+}
+
+/**
+ * 解密 CENC-AES-CTR 加密的 MP4（内存版）
+ * 输入一个完整的加密 MP4 Buffer，返回解密并重建过 moov 的 Buffer。
+ * 注意：会就地修改传入的 Buffer（调用方应独占它）。
+ */
+function decryptMp4Buffer(data, key) {
+  const total = data.length;
+  const top = parseBoxes(data, 0, total);
+  const moov = top.find(b => b.typ === 'moov');
+  if (!moov) throw new Error('no moov box found in MP4');
+
+  const trackInfo = collectSampleTable(data, top);
 
   for (const ti of trackInfo) {
     for (let i = 0; i < ti.offs.length; i++) {
@@ -808,6 +795,124 @@ function decryptMp4Buffer(data, key) {
 }
 
 /**
+ * 流式解密计划：只拿到 moov，就能算出「解密后整个文件」的字节布局，
+ * 让 mdat 边下载边解密（边放边缓存的基础）。
+ *
+ * 输出布局与 decryptMp4Buffer 的整体解密结果严格一致：
+ *   moov 之前原样；moov 换成重建后的新 moov（变小 delta 字节）；
+ *   moov 之后的所有字节整体前移 delta，其中样本区间按 CENC-CTR 解密，
+ *   其余（box 头、gap）原样拷贝。
+ *
+ * moovBuf 是完整 moov box（可来自文件头部顺序流，也可来自并行的尾部
+ * Range 预取——有些 CDN 节点的 mp4 moov 在文件末尾）；moovAbsOff 是它
+ * 在原文件中的绝对偏移。样本偏移取自 stco（绝对偏移），与 moov 的来源
+ * 无关。解析失败返回 null。
+ * 返回 { outSize, newMoov, key16, ops }，ops 按输入偏移排序：
+ *   { kind:'raw'|'sample'|'moov', inOff, len, outOff, need, iv? }
+ * need = 执行该段所需的已接收字节数（moov 段由调用方在建计划时就位）。
+ */
+function planFromMoov(moovBuf, moovAbsOff, total, key) {
+  try {
+    const top = parseBoxes(moovBuf, 0, moovBuf.length);
+    const moov = top.find(b => b.typ === 'moov');
+    if (!moov || moov.off !== 0 || moov.size < 8) return null;
+    const moovSize = moov.size;
+    if (moovAbsOff + moovSize > total) return null;
+
+    // 样本偏移必须取 rebuildMoov 改写 stco 之前的原始值
+    const trackInfo = collectSampleTable(moovBuf, top);
+    const newMoov = rebuildMoov(moovBuf, 0, moovSize, top);
+    const delta = moovSize - newMoov.length;
+
+    const moovStart = moovAbsOff;
+    const moovEnd = moovAbsOff + moovSize;
+    // 样本按「轨序 + 轨内序」排列，不去重、不排序：
+    // 有些文件的 stco 非单调、样本表存在少量自重叠，decryptMp4Buffer 是
+    // 按这个顺序就地解密的（后写的覆盖先写的，重叠处读到前一个的明文），
+    // 流式路径必须复刻同样的顺序与串链语义才能逐字节一致。
+    const samples = [];
+    for (const ti of trackInfo) {
+      for (let i = 0; i < ti.offs.length; i++) {
+        if (i >= ti.ivs.length) continue; // 与整体解密一致：没有 IV 的样本保持原样
+        const off = ti.offs[i];
+        const sz = ti.sizes[i];
+        if (off + sz > total) continue;
+        samples.push({ off, sz, iv: Buffer.from(ti.ivs[i].subarray(0, 8)) });
+      }
+    }
+
+    const outOf = (inOff) => (inOff < moovStart ? inOff : inOff - delta);
+    const ops = [];
+    for (const s of samples) {
+      ops.push({ kind: 'sample', inOff: s.off, len: s.sz, outOff: outOf(s.off), need: s.off + s.sz, iv: s.iv });
+    }
+    ops.push({ kind: 'moov', inOff: moovStart, len: newMoov.length, outOff: moovStart, need: moovEnd });
+
+    // 串链依赖：输出区间与前序样本重叠的样本，必须等前序写入后再解密
+    for (let j = 0; j < ops.length; j++) {
+      const b = ops[j];
+      if (b.kind !== 'sample') continue;
+      const deps = [];
+      for (let i = 0; i < j; i++) {
+        const a = ops[i];
+        if (a.kind !== 'sample') continue;
+        if (a.outOff < b.outOff + b.len && b.outOff < a.outOff + a.len) deps.push(i);
+      }
+      if (deps.length) b.deps = deps;
+    }
+
+    // 空隙段：输出空间里「样本区间 ∪ moov」的补集，原样拷贝
+    const covered = ops
+      .filter(o => o.kind === 'sample')
+      .map(o => [o.outOff, o.outOff + o.len]);
+    covered.push([moovStart, moovStart + newMoov.length]);
+    covered.sort((a, b) => a[0] - b[0]);
+    const mergedGaps = [];
+    for (const [s, e] of covered) {
+      const last = mergedGaps[mergedGaps.length - 1];
+      if (last && s <= last[1]) last[1] = Math.max(last[1], e);
+      else mergedGaps.push([s, e]);
+    }
+    let cursor = 0;
+    for (const [s, e] of mergedGaps) {
+      if (s > cursor) {
+        // 输出位置反推输入位置：moov 之前 out=in，之后 in=out+delta
+        const inOff = cursor < moovStart ? cursor : cursor + delta;
+        ops.push({ kind: 'raw', inOff, len: s - cursor, outOff: cursor, need: inOff + (s - cursor) });
+      }
+      cursor = Math.max(cursor, e);
+    }
+    if (cursor < total - delta) {
+      const inOff = cursor < moovStart ? cursor : cursor + delta;
+      ops.push({ kind: 'raw', inOff, len: total - delta - cursor, outOff: cursor, need: inOff + (total - delta - cursor) });
+    }
+    // 加密文件却一个样本都没有，说明这是个解析巧合的伪 moov（尾部扫描时
+    // 可能撞上 mdat 数据里的伪 fourcc），不能当计划用
+    if (key && samples.length === 0) return null;
+
+    return { outSize: total - delta, newMoov, key16: key, ops };
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
+ * 从（可能只包含文件前缀的）顺序流头部建流式解密计划。
+ * moov 还没收全时返回 null，调用方继续攒数据再试。
+ */
+function planStreamingDecrypt(headerBuf, total, key) {
+  let top;
+  try {
+    top = parseBoxes(headerBuf, 0, headerBuf.length);
+  } catch (e) {
+    return null;
+  }
+  const moov = top.find(b => b.typ === 'moov');
+  if (!moov) return null;
+  return planFromMoov(headerBuf.subarray(moov.off, moov.off + moov.size), moov.off, total, key);
+}
+
+/**
  * 解密 MP4 文件并保存
  */
 function decryptMp4File(srcPath, dstPath, key) {
@@ -825,6 +930,12 @@ module.exports = {
   deriveKey,
   decryptMp4File,
   decryptMp4Buffer,
+  decryptSample,
+  planStreamingDecrypt,
+  planFromMoov,
+  streamScore,
+  parseModelVideo,
+  // 视频直链的 UA 需与签名设备档案一致，见 src/native/signer/device.js
+  UA: signer.VIDEO_UA,
   VIDEO_REFERER,
-  UA,
 };

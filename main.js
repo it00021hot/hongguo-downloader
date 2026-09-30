@@ -8,19 +8,44 @@
  *   4. 下载管理：进度推送、暂停/取消、重试、删除、打开所在文件夹
  *   5. 设置：下载目录、命名规则、并发数（JSON 文件持久化）
  */
-const { app, BrowserWindow, ipcMain, dialog, shell, session, protocol } = require('electron');
+const { app, BrowserWindow, Menu, ipcMain, dialog, shell, session, protocol } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const fsp = require('fs/promises');
 const axios = require('axios');
 
 const hongguo = require('./src/native/hongguo');
+const onlineStream = require('./src/native/online-stream');
 const store = require('./src/store');
 const APP_VERSION = app.getVersion() || '1.0.0';
 
 const APP_TITLE = '红果短剧下载器';
 
 let mainWindow = null;
+
+// ===== 单实例 =====
+// 没有单实例锁时，用户「关掉窗口后再双击图标」会拉起第二个进程，
+// 两个进程同时读写 userData/data.json（下载队列 / 设置 / 剧集档案），
+// 后写的会覆盖先写的，表现为下载记录随机消失。
+const hasSingleInstanceLock = app.requestSingleInstanceLock();
+if (!hasSingleInstanceLock) {
+  // 已有实例在跑：把这次启动意图交给它（second-instance），本进程直接退出
+  app.quit();
+} else {
+  app.on('second-instance', focusMainWindow);
+}
+
+// ===== 进程级兜底 =====
+// Node 15+ 起 unhandledRejection 默认是致命的：任何一个异步 IPC 里漏掉的
+// reject 都会直接杀掉整个进程，用户看到的就是「窗口莫名其妙没了，再也开不出来」。
+// 下载流又会随网络抖动频繁 reject，所以这里必须兜住：记录但不让进程退出。
+process.on('unhandledRejection', (reason) => {
+  console.error('[Main] 未处理的 Promise 拒绝（已忽略，进程继续）:', reason);
+});
+
+process.on('uncaughtException', (err) => {
+  console.error('[Main] 未捕获异常（已忽略，进程继续）:', err && err.stack ? err.stack : err);
+});
 
 // ===== 视频解码兼容性 =====
 // 平台视频是 HEVC(bytevc1)，Chromium 在 Windows 上只能靠硬件解码 HEVC。
@@ -61,6 +86,7 @@ protocol.registerSchemesAsPrivileged([
 /** vid -> { buffer, size, lastUsed, seriesId, vidIndex } */
 const onlineCache = new Map();
 const ONLINE_MAX_BYTES = 300 * 1024 * 1024; // 内存缓存上限
+const ONLINE_TAIL_BYTES = 2 * 1024 * 1024; // moov 在文件尾时的预取大小
 let onlinePreparing = new Map(); // vid -> Promise，避免同集重复下载
 
 function onlineCacheTotal() {
@@ -1031,11 +1057,12 @@ ipcMain.handle('dismissed-count', async () => seriesRegistry.filter((s) => s.dis
 let mergeTasks = []; // { id, seriesId, seriesTitle, status, progress, output, total, done, error }
 
 function resolveFfmpeg(name) {
+  const executable = `${name}${process.platform === 'win32' ? '.exe' : ''}`;
   const candidates = [
-    // 打包后：resources/bin（extraResources 不解压进 asar，exe 才能执行）
-    process.resourcesPath ? path.join(process.resourcesPath, 'bin', `${name}.exe`) : null,
+    // 打包后：resources/bin（extraResources 不解压进 asar，可直接执行）
+    process.resourcesPath ? path.join(process.resourcesPath, 'bin', executable) : null,
     // 开发态：仓库内 build/ffmpeg
-    path.join(__dirname, 'build', 'ffmpeg', `${name}.exe`),
+    path.join(__dirname, 'build', 'ffmpeg', executable),
     // 系统 PATH
     name,
   ];
@@ -1046,18 +1073,20 @@ function resolveFfmpeg(name) {
       if (fs.existsSync(c)) return c;
     } catch (_) {}
   }
-  // 兜底：扫 winget 安装目录
-  try {
-    const base = path.join(process.env.LOCALAPPDATA || '', 'Microsoft', 'WinGet', 'Packages');
-    if (base && fs.existsSync(base)) {
-      for (const d of fs.readdirSync(base)) {
-        if (!/ffmpeg/i.test(d)) continue;
-        const exe = path.join(base, d);
-        const found = findFileRecursive(exe, `${name}.exe`, 6);
-        if (found) return found;
+  // 兜底：Windows 上扫 winget 安装目录
+  if (process.platform === 'win32') {
+    try {
+      const base = path.join(process.env.LOCALAPPDATA || '', 'Microsoft', 'WinGet', 'Packages');
+      if (base && fs.existsSync(base)) {
+        for (const d of fs.readdirSync(base)) {
+          if (!/ffmpeg/i.test(d)) continue;
+          const exe = path.join(base, d);
+          const found = findFileRecursive(exe, executable, 6);
+          if (found) return found;
+        }
       }
-    }
-  } catch (_) {}
+    } catch (_) {}
+  }
   return null;
 }
 
@@ -1570,13 +1599,48 @@ ipcMain.handle('get-series-episodes', async (event, seriesId) => {
 });
 
 // 断点续播
-ipcMain.handle('save-playback-position', async (event, seriesId, vidIndex, currentTime) => {  try {
-    const map = store.getPlayback() || {};
-    map[String(seriesId)] = {
-      vid_index: Number(vidIndex) || 1,
-      currentTime: Number(currentTime) || 0,
-      updatedAt: Date.now(),
+//
+// 每部剧维护一份 { lastVidIndex, positions: { 集号: 秒数 } }。
+// 早期版本每部剧只存单条 { vid_index, currentTime }，看新的一集会覆盖
+// 旧集的位置，导致「切回去只能从头看」。这里读取时做一次兼容迁移，
+// 老数据不清空也能继续用。
+function readPlaybackEntry(seriesId) {
+  const map = store.getPlayback() || {};
+  const raw = map[String(seriesId)];
+  if (!raw || typeof raw !== 'object') return { lastVidIndex: 0, positions: {} };
+
+  // 旧格式迁移：{ vid_index, currentTime } -> { lastVidIndex, positions }
+  if (raw.vid_index !== undefined && !raw.positions) {
+    const idx = Number(raw.vid_index) || 0;
+    return {
+      lastVidIndex: idx,
+      positions: idx > 0 ? { [idx]: Number(raw.currentTime) || 0 } : {},
     };
+  }
+
+  const positions = {};
+  for (const [k, v] of Object.entries(raw.positions || {})) {
+    const idx = Number(k);
+    const sec = Number(v);
+    if (Number.isFinite(idx) && idx > 0 && Number.isFinite(sec) && sec > 0) {
+      positions[idx] = sec;
+    }
+  }
+  return { lastVidIndex: Number(raw.lastVidIndex) || 0, positions };
+}
+ipcMain.handle('save-playback-position', async (event, seriesId, vidIndex, currentTime) => {
+  try {
+    const map = store.getPlayback() || {};
+    const entry = readPlaybackEntry(seriesId);
+    const idx = Number(vidIndex) || 0;
+
+    entry.lastVidIndex = idx;
+    if (idx > 0) {
+      // 看完该集会以 0 写入，等于清掉这一集的续播点
+      entry.positions[idx] = Math.max(0, Number(currentTime) || 0);
+    }
+
+    map[String(seriesId)] = { ...entry, updatedAt: Date.now() };
     store.savePlayback(map);
     return { success: true };
   } catch (error) {
@@ -1584,9 +1648,23 @@ ipcMain.handle('save-playback-position', async (event, seriesId, vidIndex, curre
   }
 });
 
-ipcMain.handle('get-playback-position', async (event, seriesId) => {
-  const map = store.getPlayback() || {};
-  return map[String(seriesId)] || null;
+/**
+ * 读播放进度。
+ * @param {string} seriesId
+ * @param {number} [vidIndex] 指定集号则只返回该集进度；省略则返回「上次看到哪一集」
+ */
+ipcMain.handle('get-playback-position', async (event, seriesId, vidIndex) => {
+  const entry = readPlaybackEntry(seriesId);
+
+  if (vidIndex === undefined || vidIndex === null) {
+    return {
+      vid_index: entry.lastVidIndex,
+      currentTime: entry.positions[entry.lastVidIndex] || 0,
+    };
+  }
+
+  const idx = Number(vidIndex) || 0;
+  return { vid_index: idx, currentTime: entry.positions[idx] || 0 };
 });
 
 /**
@@ -1604,8 +1682,15 @@ ipcMain.handle('play-series', async (event, payload) => {
 
 // ===== 在线播放 =====
 
-/** 注册流协议：按 Range 从内存缓存供给播放器 */
+/**
+ * 注册流协议：按 Range 从渐进式内存缓存供给播放器。
+ * entry 的缓冲是「最终明文文件」，边下边填；请求落到还没填充的区间时
+ * 挂起等待后台填充到位再返回——这就是边放边缓存的数据面。
+ * 开放式 Range（bytes=0-）只回已填充窗口的一段，<video> 会自己按 Range
+ * 续取，不会憋到整集下完才出画面。
+ */
 function registerStreamProtocol() {
+  const SERVE_WINDOW = 512 * 1024; // 开放式 Range 单次供给的窗口
   protocol.handle(STREAM_SCHEME, async (request) => {
     try {
       const url = new URL(request.url);
@@ -1616,34 +1701,64 @@ function registerStreamProtocol() {
       }
       entry.lastUsed = Date.now();
 
-      const buf = entry.buffer;
-      const size = buf.length;
+      // 计划就绪才知道总大小（moov 一到就有，通常不到 1 秒）
+      try {
+        await onlineStream.waitPlanReady(entry);
+      } catch (_) {
+        return new Response('prepare failed', { status: 502, headers: { 'Content-Type': 'text/plain' } });
+      }
+      const size = entry.size;
       const range = request.headers.get('range');
+      const m = range ? /bytes=(\d*)-(\d*)/.exec(range) : null;
 
-      if (range) {
-        const m = /bytes=(\d*)-(\d*)/.exec(range);
-        let start = m && m[1] ? parseInt(m[1], 10) : 0;
-        let end = m && m[2] ? parseInt(m[2], 10) : size - 1;
-        if (end >= size) end = size - 1;
-        if (start > end || start >= size) start = 0;
-        const chunk = buf.subarray(start, end + 1);
-        return new Response(chunk, {
-          status: 206,
+      if (!m) {
+        // 不带 Range 的整文件请求：等全部就绪（Chromium 拉视频基本都带 Range）
+        if (!(await onlineStream.waitRange(entry, 0, size))) {
+          return new Response('error', { status: 502, headers: { 'Content-Type': 'text/plain' } });
+        }
+        return new Response(entry.buffer, {
+          status: 200,
           headers: {
             'Content-Type': 'video/mp4',
             'Accept-Ranges': 'bytes',
-            'Content-Range': `bytes ${start}-${end}/${size}`,
-            'Content-Length': String(end - start + 1),
+            'Content-Length': String(size),
           },
         });
       }
 
-      return new Response(buf, {
-        status: 200,
+      let start = m[1] ? parseInt(m[1], 10) : 0;
+      let end = m[2] ? parseInt(m[2], 10) : -1; // -1 = 开放式
+      if (start >= size) start = 0;
+
+      if (end === -1 || end >= size) {
+        // 开放式：等这一位有数据就先给一个已填充窗口
+        if (!(await onlineStream.waitRange(entry, start, start + 1))) {
+          return new Response('error', { status: 502, headers: { 'Content-Type': 'text/plain' } });
+        }
+        const serveEnd = Math.min(onlineStream.readyEnd(entry, start), start + SERVE_WINDOW, size);
+        return new Response(entry.buffer.subarray(start, serveEnd), {
+          status: 206,
+          headers: {
+            'Content-Type': 'video/mp4',
+            'Accept-Ranges': 'bytes',
+            'Content-Range': `bytes ${start}-${serveEnd - 1}/${size}`,
+            'Content-Length': String(serveEnd - start),
+          },
+        });
+      }
+
+      if (start > end) start = 0;
+      if (!(await onlineStream.waitRange(entry, start, end + 1))) {
+        return new Response('error', { status: 502, headers: { 'Content-Type': 'text/plain' } });
+      }
+      const chunk = entry.buffer.subarray(start, end + 1);
+      return new Response(chunk, {
+        status: 206,
         headers: {
           'Content-Type': 'video/mp4',
           'Accept-Ranges': 'bytes',
-          'Content-Length': String(size),
+          'Content-Range': `bytes ${start}-${end}/${size}`,
+          'Content-Length': String(end - start + 1),
         },
       });
     } catch (e) {
@@ -1723,27 +1838,27 @@ function registerLocalProtocol() {
   });
 }
 
+/** 拉取视频直链（403 时补 Referer 重试一次）。range 用于 moov 尾部预取 */
+async function fetchPlayStream(url, { responseType = 'stream', range } = {}) {
+  const headers = { 'User-Agent': hongguo.UA };
+  if (range) headers.Range = range;
+  try {
+    return await axios({ method: 'GET', url, responseType, headers, timeout: 90000 });
+  } catch (err) {
+    if (err.response && err.response.status === 403) {
+      headers.Referer = hongguo.VIDEO_REFERER;
+      return await axios({ method: 'GET', url, responseType, headers, timeout: 90000 });
+    }
+    throw err;
+  }
+}
+
 /** 下载整集到内存并解密（官网兜底时直链为明文 MP4，跳过解密） */
 async function fetchDecryptedEpisode(vid, onProgress, seriesId) {
   const playInfo = await hongguo.fetchPlayUrlSingle(vid, seriesId);
   if (!playInfo || !playInfo.url) throw new Error('未获取到有效播放地址');
 
-  let headers = { 'User-Agent': hongguo.UA };
-  let response;
-  try {
-    response = await axios({
-      method: 'GET', url: playInfo.url, responseType: 'stream', headers, timeout: 90000,
-    });
-  } catch (err) {
-    if (err.response && err.response.status === 403) {
-      headers.Referer = hongguo.VIDEO_REFERER;
-      response = await axios({
-        method: 'GET', url: playInfo.url, responseType: 'stream', headers, timeout: 90000,
-      });
-    } else {
-      throw err;
-    }
-  }
+  const response = await fetchPlayStream(playInfo.url);
 
   const total = parseInt(response.headers['content-length'], 10) || 0;
   const chunks = [];
@@ -1769,8 +1884,11 @@ async function fetchDecryptedEpisode(vid, onProgress, seriesId) {
 }
 
 /**
- * 准备在线播放：下载+解密到内存，返回可交给 <video> 的流地址。
- * 同一集重复请求会复用进行中的任务。
+ * 准备在线播放（边放边缓存）：
+ * moov 一到（通常头几十 KB、不到 1 秒）就把流地址交给播放器开始播，
+ * 之后的数据在后台边下边解密；<video> 按 Range 取数，取到未填充的
+ * 区间由流协议挂起等待。同一集重复请求复用同一个缓存条目。
+ * CDN 不给长度等异常情况回退为「整段解密完再播」（fetchDecryptedEpisode）。
  */
 ipcMain.handle('prepare-online-play', async (event, payload) => {
   try {
@@ -1778,10 +1896,15 @@ ipcMain.handle('prepare-online-play', async (event, payload) => {
     if (!vid) return { success: false, error: '缺少 vid' };
     const key = String(vid);
 
-    // 已在缓存
+    // 已在缓存（含正在缓存的）：等它可播即可
     if (onlineCache.has(key)) {
       const e = onlineCache.get(key);
       e.lastUsed = Date.now();
+      try {
+        await onlineStream.waitPlanReady(e);
+      } catch (err) {
+        return { success: false, error: err.message };
+      }
       return {
         success: true,
         url: `${STREAM_SCHEME}://play/${encodeURIComponent(key)}`,
@@ -1790,51 +1913,85 @@ ipcMain.handle('prepare-online-play', async (event, payload) => {
       };
     }
 
-    // 去重
+    // 去重：另一个调用正在创建同集条目
     if (onlinePreparing.has(key)) {
-      const buf = await onlinePreparing.get(key);
+      try {
+        await onlinePreparing.get(key);
+      } catch (err) {
+        return { success: false, error: err.message };
+      }
+      const e = onlineCache.get(key);
+      if (!e) return { success: false, error: '在线播放准备失败' };
       return {
         success: true,
         url: `${STREAM_SCHEME}://play/${encodeURIComponent(key)}`,
-        size: buf.length,
+        size: e.size,
         cached: true,
       };
     }
 
-    const task = (async () => {
-      console.log('[Online] 开始缓存第', vidIndex, '集:', key);
-      const buf = await fetchDecryptedEpisode(key, (received, total, phase) => {
-        sendToRenderer('online-play-progress', {
+    const entry = onlineStream.createEntry({ vid: key, seriesId, vidIndex });
+    onlineCache.set(key, entry);
+    onlinePreparing.set(key, entry.whenPlanReady);
+
+    // 后台任务：拿直链 -> 边下边解密。不阻塞下面把地址交给前端。
+    (async () => {
+      try {
+        console.log('[Online] 开始边放边缓存 第', vidIndex, '集:', key);
+        const playInfo = await hongguo.fetchPlayUrlSingle(key, seriesId);
+        if (!playInfo || !playInfo.url) throw new Error('未获取到有效播放地址');
+        const key16 = playInfo.spadeA ? hongguo.deriveKey(playInfo.spadeA) : null;
+        if (playInfo.spadeA && !key16) throw new Error('密钥派生失败');
+
+        const response = await fetchPlayStream(playInfo.url);
+        const total = parseInt(response.headers['content-length'], 10) || 0;
+        const onProgress = (received, t, phase) => sendToRenderer('online-play-progress', {
           vid: key, seriesId, vidIndex,
-          received, total,
-          percent: total ? Math.floor((received / total) * 100) : 0,
+          received, total: t,
+          percent: t ? Math.floor((received / t) * 100) : 0,
           phase: phase || 'downloading',
         });
-      }, seriesId);
-      onlineCache.set(key, {
-        buffer: buf,
-        size: buf.length,
-        lastUsed: Date.now(),
-        seriesId: seriesId ? String(seriesId) : '',
-        vidIndex: Number(vidIndex) || 0,
-      });
-      trimOnlineCache();
-      console.log('[Online] 缓存完成 第', vidIndex, '集', (buf.length / 1048576).toFixed(1) + 'MB',
-        '当前内存占用', (onlineCacheTotal() / 1048576).toFixed(1) + 'MB');
-      return buf;
+        // 有些 CDN 节点的 moov 在文件末尾：顺序流半天建不出计划时，
+        // 并行取一次文件尾部把 moov 拿到，播放就不用等整集下完
+        const fetchTail = async () => {
+          const rangeStart = Math.max(0, total - ONLINE_TAIL_BYTES);
+          const res = await fetchPlayStream(playInfo.url, {
+            responseType: 'arraybuffer',
+            range: `bytes=${rangeStart}-`,
+          });
+          const buf = Buffer.from(res.data || []);
+          if (!buf.length) throw new Error('尾部预取为空');
+          const cr = res.headers['content-range'];
+          const m = cr && /bytes\s+(\d+)-/.exec(cr);
+          const off = m ? parseInt(m[1], 10) : (res.status === 206 ? total - buf.length : 0);
+          return { buf, off };
+        };
+
+        if (!total) {
+          const buf = await fetchDecryptedEpisode(key, onProgress, seriesId);
+          onlineStream.completeWithBuffer(entry, buf);
+        } else {
+          await onlineStream.beginDownload(entry, response, { key16, total, onProgress, fetchTail });
+        }
+        if (onlineCache.get(key) === entry) trimOnlineCache();
+        console.log('[Online] 缓存完成 第', vidIndex, '集', ((entry.size || 0) / 1048576).toFixed(1) + 'MB',
+          '当前内存占用', (onlineCacheTotal() / 1048576).toFixed(1) + 'MB');
+      } catch (error) {
+        console.error('[Online] 准备失败:', error.message);
+        onlineStream.failEntry(entry, error.message);
+        if (onlineCache.get(key) === entry) onlineCache.delete(key);
+      } finally {
+        onlinePreparing.delete(key);
+      }
     })();
 
-    onlinePreparing.set(key, task);
-    try {
-      const buf = await task;
-      return {
-        success: true,
-        url: `${STREAM_SCHEME}://play/${encodeURIComponent(key)}`,
-        size: buf.length,
-      };
-    } finally {
-      onlinePreparing.delete(key);
-    }
+    // moov 就绪即可开播；失败在这里抛给前端 toast
+    await entry.whenPlanReady;
+    return {
+      success: true,
+      url: `${STREAM_SCHEME}://play/${encodeURIComponent(key)}`,
+      size: entry.size,
+    };
   } catch (error) {
     console.error('[Online] 准备失败:', error.message);
     return { success: false, error: error.message };
@@ -1973,7 +2130,13 @@ ipcMain.handle('transcode-for-playback', async (event, payload) => {
     if (!inputPath || !fs.existsSync(inputPath)) {
       const vid = payload.vid;
       if (!vid) return { success: false, error: '既没有本地文件，也没有 vid' };
-      let buf = onlineCache.has(String(vid)) ? onlineCache.get(String(vid)).buffer : null;
+      let buf = null;
+      const cached = onlineCache.get(String(vid));
+      if (cached) {
+        // 边放边缓存模式下缓冲可能还没下完，等它完成再落盘
+        try { await cached.whenComplete; } catch (_) {}
+        if (onlineCache.get(String(vid)) === cached) buf = cached.buffer;
+      }
       if (!buf) {
         buf = await fetchDecryptedEpisode(String(vid), () => {});
       }
@@ -2736,7 +2899,61 @@ ipcMain.handle('open-external-url', async (event, url) => {
 });
 
 // ===== 窗口创建 =====
+/**
+ * 唤起主窗口；窗口已关则重建。
+ *
+ * 窗口「关掉之后回不来」的根因：macOS 上 app 仍驻留，但只剩下
+ * `activate`（仅点击 Dock 图标时触发）这一条恢复路径；菜单又被整个隐藏了。
+ * 这里把「新建 / 取消最小化 / 显示 / 聚焦」收敛成一个入口，供
+ * activate、second-instance、菜单项共用。
+ */
+function focusMainWindow() {
+  if (!mainWindow || mainWindow.isDestroyed()) {
+    createWindow();
+    return;
+  }
+  if (mainWindow.isMinimized()) mainWindow.restore();
+  if (!mainWindow.isVisible()) mainWindow.show();
+  mainWindow.focus();
+}
+
+/**
+ * 应用菜单。
+ *
+ * 原来整个菜单栏被隐藏，macOS 上就没有任何可见的「重新打开」入口。
+ * 这里补一份最小菜单：⌥ 仍可呼出（保持 autoHideMenuBar 的观感），
+ * 但关闭窗口后至少还能从菜单或 ⌘+1 回来。
+ */
+function buildAppMenu() {
+  const isMac = process.platform === 'darwin';
+  const template = [
+    ...(isMac ? [{ role: 'appMenu' }] : []),
+    {
+      label: '窗口',
+      submenu: [
+        { label: '最小化', role: 'minimize' },
+        { label: '缩放', role: 'zoom' },
+        { type: 'separator' },
+        { label: '主窗口', accelerator: 'CmdOrCtrl+1', click: focusMainWindow },
+        { label: '重新打开窗口', click: focusMainWindow },
+        ...(isMac ? [] : [{ type: 'separator' }, { label: '关闭', role: 'close' }]),
+      ],
+    },
+  ];
+  Menu.setApplicationMenu(Menu.buildFromTemplate(template));
+}
+
+app.on('activate', focusMainWindow);
+
 function createWindow() {
+  // 已有窗口时不要重复创建，直接唤起
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    if (mainWindow.isMinimized()) mainWindow.restore();
+    mainWindow.show();
+    mainWindow.focus();
+    return mainWindow;
+  }
+
   mainWindow = new BrowserWindow({
     width: 1100,
     height: 750,
@@ -2753,7 +2970,14 @@ function createWindow() {
     },
   });
 
-  mainWindow.setMenuBarVisibility(false);
+  // macOS 保留菜单（配合 autoHideMenuBar，按 ⌥ 呼出）——
+  // 这是窗口关闭后除 Dock 之外唯一的恢复入口，不能再整个藏掉。
+  // Windows / Linux 维持无菜单的观感。
+  if (process.platform === 'darwin') {
+    mainWindow.setMenuBarVisibility(true);
+  } else {
+    mainWindow.setMenuBarVisibility(false);
+  }
 
   // 开发模式加载 vite dev server，生产模式加载打包产物
   const devUrl = process.env.VITE_DEV_SERVER_URL;
@@ -2766,10 +2990,31 @@ function createWindow() {
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
+
+  // 渲染进程崩溃（长剧集列表 OOM、异常解码等）时窗口会变成一片空白且不会自愈。
+  // 这里重载一次；连续崩两次就不再自动重试，避免崩溃循环刷屏。
+  let reloads = 0;
+  mainWindow.webContents.on('render-process-gone', (_e, details) => {
+    console.error(`[Window] 渲染进程异常退出: ${details.reason} (exitCode=${details.exitCode})`);
+    if (reloads >= 2) {
+      console.error('[Window] 已连续崩溃 2 次，不再自动重载，请手动重启应用');
+      return;
+    }
+    reloads += 1;
+    console.error(`[Window] 尝试第 ${reloads} 次重载…`);
+    if (devUrl) mainWindow.loadURL(devUrl);
+    else mainWindow.loadFile(path.join(__dirname, 'dist-react', 'index.html'));
+  });
+  mainWindow.webContents.on('did-finish-load', () => {
+    reloads = 0;
+  });
 }
 
 // ===== 应用生命周期 =====
 app.whenReady().then(async () => {
+  // 第二个实例已经退出，这里不做任何初始化，避免与主实例抢写 data.json
+  if (!hasSingleInstanceLock) return;
+
   const dataFile = path.join(app.getPath('userData'), 'data.json');
   store.init(dataFile);
   loadDownloadTasks();
@@ -2792,11 +3037,8 @@ app.whenReady().then(async () => {
     pumpQueue();
   }
 
+  buildAppMenu();
   createWindow();
-
-  app.on('activate', () => {
-    if (BrowserWindow.getAllWindows().length === 0) createWindow();
-  });
 });
 
 app.on('window-all-closed', () => {

@@ -2,6 +2,36 @@ import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react'
 import './Player.css';
 import { Play, Film, Download, Check, RefreshCw, Layers, X, Trash2, ChevronDown, Zap } from './icons';
 
+// ===== 播放倍速 =====
+// 自动连播切集时，canPlay 会短暂变 false（转在线播放、等下载、转兼容模式），
+// 而 JSX 是 `{canPlay ? <video/> : <div/>}` —— video 元素会被整个卸载再重建。
+// 新建元素的 playbackRate 恒为 1，所以用户设的倍速会在每次切集后「被重置」。
+//
+// 这里把倍速持久化，并在每次渲染后恢复到当前元素上，
+// 覆盖「切集 → 卸载 → 重建」的全部路径。
+const RATE_KEY = 'hongguo.playbackRate';
+const VOLUME_KEY = 'hongguo.volume';
+const MUTED_KEY = 'hongguo.muted';
+const MIN_RATE = 0.25;
+const MAX_RATE = 4;
+
+function readStoredNumber(key, fallback, min, max) {
+  try {
+    const v = parseFloat(window.localStorage.getItem(key));
+    return Number.isFinite(v) && v >= min && v <= max ? v : fallback;
+  } catch {
+    return fallback; // 隐私模式 / localStorage 不可用时退回默认
+  }
+}
+
+function writeStoredNumber(key, value) {
+  try {
+    window.localStorage.setItem(key, String(value));
+  } catch {
+    /* 存不下就算了，本次会话内 ref 仍然有效 */
+  }
+}
+
 /**
  * Player —— 内置播放器
  *
@@ -47,6 +77,11 @@ function Player({ target, onNavigate }) {
   const toastTimer = useRef(null);
   const pendingSeekRef = useRef(0); // 切集后要跳转的秒数
   const lastSavedRef = useRef(0);
+  const playbackRateRef = useRef(readStoredNumber(RATE_KEY, 1, MIN_RATE, MAX_RATE));
+  const volumeRef = useRef(readStoredNumber(VOLUME_KEY, 1, 0, 1)); // 音量同理会被重置
+  // 静音是独立状态：用户主动静音后 volume 仍是原值，
+  // 不能用「volume === 0」反推，否则恢复时会把静音悄悄取消。
+  const mutedRef = useRef(readStoredNumber(MUTED_KEY, 0, 0, 1) === 1);
   const stateRef = useRef({ currentIndex, autoNext, activeSeriesId });
   stateRef.current = { currentIndex, autoNext, activeSeriesId };
 
@@ -326,9 +361,14 @@ function Player({ target, onNavigate }) {
   /**
    * 在线播放：让主进程把该集下载+解密到内存，拿回可播放的流地址。
    * 不写本地文件、不占用下载目录，看完可选择清理内存缓存。
+   *
+   * opts.startAt：显式指定起播秒数（连播传 0）。省略则读这一集自己的续播点，
+   * 与本地集的 goToEpisode 行为对齐 —— 点没下载过的集也能接着上次看。
+   * 续播点必须在流 URL 就位前写入 pendingSeekRef，否则 loadedmetadata
+   * 先触发，进度就接不上了。
    */
   const startOnlinePlay = useCallback(
-    async (vidIndex) => {
+    async (vidIndex, opts = {}) => {
       const ep = episodes.find((e) => e.vid_index === vidIndex);
       if (!ep || !ep.vid) {
         showToast('这一集缺少 vid，无法在线播放');
@@ -339,6 +379,18 @@ function Player({ target, onNavigate }) {
       setOnlineProgress({ vid: ep.vid, percent: 0, phase: 'downloading' });
       setOnlineVid(ep.vid);
       setOnlineUrl('');
+      if (typeof opts.startAt === 'number') {
+        pendingSeekRef.current = opts.startAt;
+      } else {
+        try {
+          const saved = await window.electronAPI.getPlaybackPosition(activeSeriesId, vidIndex);
+          // 等待期间可能又点了别的集，丢弃过期结果
+          if (stateRef.current.currentIndex !== vidIndex) return;
+          pendingSeekRef.current = saved ? saved.currentTime || 0 : 0;
+        } catch {
+          pendingSeekRef.current = 0;
+        }
+      }
       try {
         const res = await window.electronAPI.prepareOnlinePlay({
           vid: ep.vid,
@@ -364,11 +416,12 @@ function Player({ target, onNavigate }) {
   );
 
   // 切集
+  // resume = false 用于「刚看完这集、接着播下一集」：那时进度应当归零。
   const goToEpisode = useCallback(
-    (vidIndex, keepPlaying = true) => {
+    (vidIndex, keepPlaying = true, resume = true) => {
       setCurrentIndex(vidIndex);
       setWaitingFor(null);
-      pendingSeekRef.current = 0;
+
       // 换集时清掉上一集的在线流（下载好的集直接走本地文件）
       const ep = episodes.find((e) => e.vid_index === vidIndex);
       if (!ep || ep.status === 'completed') {
@@ -376,6 +429,25 @@ function Player({ target, onNavigate }) {
         setOnlineUrl('');
         setOnlineProgress(null);
       }
+
+      // 读这一集自己的续播点。必须在设置 video src 之前拿到，
+      // 否则 src 先就位、loadedmetadata 先触发，进度就接不上了。
+      if (resume) {
+        const sid = activeSeriesId;
+        (async () => {
+          try {
+            const saved = await window.electronAPI.getPlaybackPosition(sid, vidIndex);
+            // 期间可能又切到别的集了，丢弃过期结果
+            if (stateRef.current.currentIndex !== vidIndex) return;
+            pendingSeekRef.current = saved ? saved.currentTime || 0 : 0;
+          } catch {
+            pendingSeekRef.current = 0;
+          }
+        })();
+      } else {
+        pendingSeekRef.current = 0;
+      }
+
       const v = videoRef.current;
       if (v && keepPlaying) {
         // 等 src 更新后再播
@@ -384,7 +456,7 @@ function Player({ target, onNavigate }) {
         }, 80);
       }
     },
-    [episodes]
+    [episodes, activeSeriesId]
   );
 
   // 找下一集（按集号顺序）
@@ -431,7 +503,7 @@ function Player({ target, onNavigate }) {
 
     const nextIsLocal = next.status === 'completed' && next.fileUrl && !(autoDelete && finished && finished.status === 'completed');
     if (nextIsLocal) {
-      goToEpisode(next.vid_index, true);
+      goToEpisode(next.vid_index, true, false); // 接着播下一集，从头开始
     } else if (next.status === 'downloading' || next.status === 'pending') {
       // 正在下载：等它下完自动接上
       setWaitingFor(next.vid_index);
@@ -439,8 +511,10 @@ function Player({ target, onNavigate }) {
       showToast(`第 ${next.vid_index} 集正在下载，完成后自动播放`);
     } else {
       // 未下载（或被自动删了）-> 直接在线播放
+      // startAt 显式传 0：上面刚以 0 保存过下一集，但那次写入是异步的，
+      // 若在这里读续播点可能读到旧值，导致连播跳回上一回看到的位置。
       showToast(`第 ${next.vid_index} 集转在线播放`);
-      startOnlinePlay(next.vid_index);
+      startOnlinePlay(next.vid_index, { startAt: 0 });
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [findNext, goToEpisode, showToast, startOnlinePlay, autoDelete, episodes, refreshCacheInfo, loadDetail]);
@@ -463,23 +537,46 @@ function Player({ target, onNavigate }) {
     };
   }, [persistPosition]);
 
-  // 切集 / 恢复断点
+  // 恢复倍速 / 音量：每次渲染后都把当前 video 元素的播放状态拉回记录值。
+  // 刻意不设依赖数组 —— 新的 video 元素挂载后的下一次渲染就会执行，
+  // 正好覆盖「切集 → 卸载 → 重建」。设置这两个属性不会触发 React 重渲染，
+  // 因此不存在循环。
   useEffect(() => {
     const v = videoRef.current;
-    if (!v || !current || current.status !== 'completed') return;
-    const seekTo = pendingSeekRef.current || 0;
-    const onLoaded = () => {
-      if (seekTo > 0 && seekTo < v.duration - 3) {
-        v.currentTime = seekTo;
-        showToast(`从 ${Math.floor(seekTo / 60)}:${String(Math.floor(seekTo % 60)).padStart(2, '0')} 继续播放`);
-      }
-      pendingSeekRef.current = 0;
-      v.play().catch(() => {});
-    };
-    v.addEventListener('loadedmetadata', onLoaded, { once: true });
-    return () => v.removeEventListener('loadedmetadata', onLoaded);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [current && current.fileUrl]);
+    if (!v) return;
+    if (Math.abs(v.playbackRate - playbackRateRef.current) > 0.001) {
+      v.playbackRate = playbackRateRef.current;
+    }
+    if (Math.abs(v.volume - volumeRef.current) > 0.001) {
+      v.volume = volumeRef.current;
+    }
+    if (v.muted !== mutedRef.current) {
+      v.muted = mutedRef.current;
+    }
+  });
+
+  // 记录用户改动的倍速 / 音量（原生 controls 菜单触发）
+  const handleRateChange = useCallback((e) => {
+    const r = e.currentTarget.playbackRate;
+    if (Number.isFinite(r) && r > 0) {
+      playbackRateRef.current = r;
+      writeStoredNumber(RATE_KEY, r);
+    }
+  }, []);
+
+  const handleVolumeChange = useCallback((e) => {
+    const el = e.currentTarget;
+    // muted 变化也会触发 volumechange，所以两项一起记
+    if (Number.isFinite(el.volume) && el.volume >= 0 && el.volume <= 1) {
+      volumeRef.current = el.volume;
+      writeStoredNumber(VOLUME_KEY, el.volume);
+    }
+    if (el.muted !== mutedRef.current) {
+      mutedRef.current = el.muted;
+      writeStoredNumber(MUTED_KEY, el.muted ? 1 : 0);
+    }
+  }, []);
+
 
   // 快捷键
   useEffect(() => {
@@ -665,6 +762,30 @@ function Player({ target, onNavigate }) {
   const isOnlinePlaying = onlineVid && current && current.vid === onlineVid && onlineUrl;
   const canPlay = !!(current && (compatUrl || (current.status === 'completed' && current.fileUrl) || isOnlinePlaying));
   const videoSrc = compatUrl || (isOnlinePlaying ? onlineUrl : (current && current.fileUrl) || '');
+
+  // 切集 / 恢复断点
+  //
+  // 依赖 videoSrc（真正喂给 <video> 的地址）而不是 current.fileUrl：
+  // 在线播放时 fileUrl 为空，用它当依赖会完全捕捉不到源的到来。
+  // 同时不再要求 status === 'completed' —— 未下载走在线播放同样要能续播。
+  useEffect(() => {
+    const v = videoRef.current;
+    if (!v || !videoSrc || !current) return;
+    const seekTo = pendingSeekRef.current || 0;
+    const onLoaded = () => {
+      if (seekTo > 0 && seekTo < v.duration - 3) {
+        v.currentTime = seekTo;
+        showToast(`从 ${Math.floor(seekTo / 60)}:${String(Math.floor(seekTo % 60)).padStart(2, '0')} 继续播放`);
+      }
+      pendingSeekRef.current = 0;
+      v.play().catch(() => {});
+    };
+    // src 已经就位时 loadedmetadata 不会再触发，补一次尝试
+    if (v.readyState >= 1) onLoaded();
+    else v.addEventListener('loadedmetadata', onLoaded, { once: true });
+    return () => v.removeEventListener('loadedmetadata', onLoaded);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [videoSrc]);
 
   return (
     <div className="player-container">
@@ -891,6 +1012,8 @@ function Player({ target, onNavigate }) {
             onEnded={handleEnded}
             onPause={persistPosition}
             onPlaying={handlePlaying}
+            onRateChange={handleRateChange}
+            onVolumeChange={handleVolumeChange}
           />
         ) : (
           <div className="player-placeholder">

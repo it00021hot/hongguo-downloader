@@ -58,7 +58,8 @@ contextBridge.exposeInMainWorld('electronAPI', {
     ipcRenderer.invoke('download-single-episode', seriesId, vidIndex),
   savePlaybackPosition: (seriesId, vidIndex, currentTime) =>
     ipcRenderer.invoke('save-playback-position', seriesId, vidIndex, currentTime),
-  getPlaybackPosition: (seriesId) => ipcRenderer.invoke('get-playback-position', seriesId),
+  getPlaybackPosition: (seriesId, vidIndex) =>
+    ipcRenderer.invoke('get-playback-position', seriesId, vidIndex),
 
   // 一键合并
   getFfmpegStatus: () => ipcRenderer.invoke('get-ffmpeg-status'),
