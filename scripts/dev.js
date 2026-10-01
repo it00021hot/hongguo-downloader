@@ -10,7 +10,7 @@ const { spawn } = require('child_process');
 const net = require('net');
 const path = require('path');
 
-const PREFERRED_PORT = 5173; // 与 vite.config.js 保持一致
+const PREFERRED_PORT = 5173; // 与 vite.config.mjs 保持一致
 
 // 检查端口是否被占用（返回 true=占用）
 function checkPort(port) {

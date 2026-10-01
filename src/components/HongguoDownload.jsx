@@ -1,8 +1,21 @@
 import React, { useState } from 'react';
-import './HongguoDownload.css';
-import { Film, Download, CheckSquare, Square, RefreshCw, Folder, Sparkles, Search } from './icons';
+import { Download, Film, FolderOpen, RefreshCw, Search, Sparkles } from 'lucide-react';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Separator } from '@/components/ui/separator';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
 import SearchPanel from './SearchPanel';
 
+const QUICK_SELECTS = [
+  { type: 'first10', label: '前 10 集' },
+  { type: 'first30', label: '前 30 集' },
+  { type: 'last30', label: '后 30 集' },
+];
 
 function HongguoDownload({ onNavigate }) {
   const [tab, setTab] = useState('search'); // 'search' | 'input'
@@ -24,7 +37,6 @@ function HongguoDownload({ onNavigate }) {
     setSeriesData(data);
     setSelectedVids(new Set(data.episodes.map((ep) => ep.vid)));
     setSuccessMsg(`已选中《${data.series_title}》共 ${data.total} 集，可直接提交下载`);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   // 解析红果短剧
@@ -160,174 +172,182 @@ function HongguoDownload({ onNavigate }) {
   };
 
   return (
-    <div className="hongguo-container">
-      {/* 头部 Banner 区 */}
-      <div className="hongguo-hero">
-        <div className="hero-icon">
-          <Film size={32} />
-        </div>
-        <div className="hero-text">
-          <h2>红果短剧批量下载</h2>
-          <p>支持粘贴红果短剧 App 分享链接或剧集 ID，突破 AES-128 CENC 原生加密，无水印全集高清下载。</p>
-        </div>
-      </div>
+    <div className="flex flex-col gap-6 pb-10">
+      <p className="text-sm text-muted-foreground">
+        支持粘贴红果短剧 App 分享链接或剧集 ID，突破 AES-128 CENC 原生加密，无水印全集高清下载。
+      </p>
 
-      {/* 方式切换 */}
-      <div className="mode-tabs">
-        <button
-          className={`mode-tab ${tab === 'search' ? 'active' : ''}`}
-          onClick={() => setTab('search')}
-        >
-          <Search size={16} />
-          <span>搜索剧集</span>
-        </button>
-        <button
-          className={`mode-tab ${tab === 'input' ? 'active' : ''}`}
-          onClick={() => setTab('input')}
-        >
-          <Sparkles size={16} />
-          <span>粘贴链接 / ID</span>
-        </button>
-      </div>
+      <Tabs value={tab} onValueChange={setTab}>
+        <TabsList>
+          <TabsTrigger value="search">
+            <Search />
+            搜索剧集
+          </TabsTrigger>
+          <TabsTrigger value="input">
+            <Sparkles />
+            粘贴链接 / ID
+          </TabsTrigger>
+        </TabsList>
 
-      {tab === 'search' ? (
-        <SearchPanel
-          onSelectSeries={handleSeriesFromSearch}
-          onSwitchToInput={() => setTab('input')}
-        />
-      ) : (
-        /* 解析输入卡片 */
-        <div className="hongguo-card">
-          <div className="card-header-title">
-            <Sparkles size={18} />
-            <span>输入短剧链接或 ID</span>
-          </div>
-          <div className="input-group">
-            <input
-              type="text"
-              className="input-field"
-              placeholder="例如: https://novelquickapp.com/s/WGPClz6sw10/ 或 7664958856774044697"
-              value={inputUrl}
-              onChange={(e) => setInputUrl(e.target.value)}
-              onKeyDown={(e) => e.key === 'Enter' && handleResolve()}
-            />
-            <button className="btn btn-primary" onClick={handleResolve} disabled={loading}>
-              {loading ? (
-                <>
-                  <RefreshCw size={16} className="spin" />
-                  <span>解析中...</span>
-                </>
-              ) : (
-                <>
-                  <Film size={16} />
-                  <span>解析剧集</span>
-                </>
-              )}
-            </button>
-          </div>
+        <TabsContent value="search" className="mt-4">
+          <SearchPanel
+            onSelectSeries={handleSeriesFromSearch}
+            onSwitchToInput={() => setTab('input')}
+          />
+        </TabsContent>
 
-          {errorMsg && <div className="alert alert-error">{errorMsg}</div>}
-          {successMsg && <div className="alert alert-success">{successMsg}</div>}
-        </div>
+        <TabsContent value="input" className="mt-4">
+          <Card>
+            <CardHeader>
+              <CardTitle>输入短剧链接或 ID</CardTitle>
+            </CardHeader>
+            <CardContent className="flex flex-col gap-3">
+              <div className="flex gap-2">
+                <Input
+                  placeholder="例如: https://novelquickapp.com/s/WGPClz6sw10/ 或 7664958856774044697"
+                  value={inputUrl}
+                  onChange={(e) => setInputUrl(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleResolve()}
+                />
+                <Button onClick={handleResolve} disabled={loading} className="shrink-0">
+                  {loading ? (
+                    <>
+                      <RefreshCw className="animate-spin" />
+                      解析中...
+                    </>
+                  ) : (
+                    <>
+                      <Film />
+                      解析剧集
+                    </>
+                  )}
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+        </TabsContent>
+      </Tabs>
+
+      {errorMsg && (
+        <Alert variant="destructive">
+          <AlertDescription>{errorMsg}</AlertDescription>
+        </Alert>
       )}
-
-      {/* 搜索模式下的提示信息（解析卡片被替换了，这里单独显示） */}
-      {tab === 'search' && (errorMsg || successMsg) && (
-        <div className="hongguo-card" style={{ marginTop: 0 }}>
-          {errorMsg && <div className="alert alert-error">{errorMsg}</div>}
-          {successMsg && <div className="alert alert-success">{successMsg}</div>}
-        </div>
+      {successMsg && (
+        <Alert>
+          <AlertDescription>{successMsg}</AlertDescription>
+        </Alert>
       )}
 
       {/* 剧集列表与选择控制 */}
       {seriesData && (
-        <div className="hongguo-card episode-section">
-          {/* 短剧元信息 */}
-          <div className="series-header">
-            <div className="series-info">
-              {seriesData.cover ? (
-                <img src={seriesData.cover} alt={seriesData.series_title} className="series-cover" />
-              ) : (
-                <div className="series-cover-placeholder">
-                  <Film size={28} />
+        <Card>
+          <CardHeader>
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div className="flex gap-4">
+                {seriesData.cover ? (
+                  <img
+                    src={seriesData.cover}
+                    alt={seriesData.series_title}
+                    className="aspect-3/4 w-20 shrink-0 rounded-lg border object-cover"
+                  />
+                ) : (
+                  <div className="grid aspect-3/4 w-20 shrink-0 place-items-center rounded-lg border bg-muted text-muted-foreground">
+                    <Film className="size-6" />
+                  </div>
+                )}
+                <div className="grid content-start gap-2">
+                  <CardTitle>《{seriesData.series_title}》</CardTitle>
+                  <div className="flex flex-wrap gap-1.5">
+                    <Badge>总集数: {seriesData.total} 集</Badge>
+                    <Badge variant="secondary" className="font-mono">
+                      series_id: {seriesData.series_id}
+                    </Badge>
+                    <Badge variant="outline">AES-128 原生自动解密</Badge>
+                  </div>
                 </div>
-              )}
-              <div className="series-meta">
-                <h3 className="series-title">《{seriesData.series_title}》</h3>
-                <div className="series-tags">
-                  <span className="badge">总集数: {seriesData.total} 集</span>
-                  <span className="badge badge-secondary">series_id: {seriesData.series_id}</span>
-                  <span className="badge badge-success">AES-128 原生自动解密</span>
-                </div>
+              </div>
+              <div className="flex flex-wrap gap-2">
+                <Button
+                  onClick={handleBatchDownload}
+                  disabled={submitting || selectedVids.size === 0}
+                >
+                  <Download />
+                  下载选中集数 ({selectedVids.size}/{seriesData.total})
+                </Button>
+                {onNavigate && (
+                  <Button variant="outline" onClick={() => onNavigate('manager')}>
+                    <FolderOpen />
+                    查看下载管理
+                  </Button>
+                )}
+              </div>
+            </div>
+          </CardHeader>
+
+          <CardContent className="flex flex-col gap-4">
+            <Separator />
+
+            <div className="flex flex-wrap items-center justify-between gap-3">
+              <div className="flex flex-wrap items-center gap-2">
+                <Button size="sm" variant="secondary" onClick={handleSelectAll}>
+                  全选
+                </Button>
+                <Button size="sm" variant="secondary" onClick={handleInvertSelect}>
+                  反选
+                </Button>
+                <Button size="sm" variant="secondary" onClick={handleDeselectAll}>
+                  取消全选
+                </Button>
+                <Separator orientation="vertical" className="h-5" />
+                {QUICK_SELECTS.map((q) => (
+                  <Button key={q.type} size="sm" variant="secondary" onClick={() => handleQuickSelect(q.type)}>
+                    {q.label}
+                  </Button>
+                ))}
+              </div>
+
+              <div className="flex items-center gap-2">
+                <Label htmlFor="range-filter" className="text-xs text-muted-foreground">
+                  范围筛选
+                </Label>
+                <Input
+                  id="range-filter"
+                  className="w-44"
+                  placeholder="如 1-30 或 1,5,10"
+                  value={rangeInput}
+                  onChange={(e) => setRangeInput(e.target.value)}
+                  onKeyDown={(e) => e.key === 'Enter' && handleApplyRange()}
+                />
+                <Button size="sm" onClick={handleApplyRange}>
+                  应用
+                </Button>
               </div>
             </div>
 
-            <div className="batch-action-bar">
-              <button
-                className="btn btn-primary"
-                onClick={handleBatchDownload}
-                disabled={submitting || selectedVids.size === 0}
-              >
-                <Download size={16} />
-                <span>下载选中集数 ({selectedVids.size}/{seriesData.total})</span>
-              </button>
-              {onNavigate && (
-                <button className="btn btn-outline" onClick={() => onNavigate('manager')}>
-                  <Folder size={16} />
-                  <span>查看下载管理</span>
-                </button>
-              )}
-            </div>
-          </div>
-
-          {/* 筛选与操作栏 */}
-          <div className="controls-row">
-            <div className="select-buttons">
-              <button className="btn-chip" onClick={handleSelectAll}>全选</button>
-              <button className="btn-chip" onClick={handleInvertSelect}>反选</button>
-              <button className="btn-chip" onClick={handleDeselectAll}>取消全选</button>
-              <span className="divider"></span>
-              <button className="btn-chip" onClick={() => handleQuickSelect('first10')}>前 10 集</button>
-              <button className="btn-chip" onClick={() => handleQuickSelect('first30')}>前 30 集</button>
-              <button className="btn-chip" onClick={() => handleQuickSelect('last30')}>后 30 集</button>
-            </div>
-
-            <div className="range-filter">
-              <span className="range-label">范围筛选:</span>
-              <input
-                type="text"
-                className="range-input"
-                placeholder="如 1-30 或 1,5,10"
-                value={rangeInput}
-                onChange={(e) => setRangeInput(e.target.value)}
-                onKeyDown={(e) => e.key === 'Enter' && handleApplyRange()}
-              />
-              <button className="btn-chip btn-chip-primary" onClick={handleApplyRange}>应用</button>
-            </div>
-          </div>
-
-          {/* 剧集网格列表 */}
-          <div className="episode-grid">
-            {seriesData.episodes.map((ep) => {
-              const isChecked = selectedVids.has(ep.vid);
-              return (
-                <div
+            <div className="grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-4">
+              {seriesData.episodes.map((ep) => (
+                <label
                   key={ep.vid}
-                  className={`episode-card ${isChecked ? 'selected' : ''}`}
-                  onClick={() => toggleVid(ep.vid)}
+                  className="flex cursor-pointer items-center gap-2.5 rounded-lg border p-2.5 transition-colors hover:bg-accent"
                 >
-                  <div className="checkbox-icon">
-                    {isChecked ? <CheckSquare size={18} className="icon-checked" /> : <Square size={18} className="icon-unchecked" />}
-                  </div>
-                  <div className="episode-info">
-                    <span className="episode-num">第 {String(ep.vid_index).padStart(2, '0')} 集</span>
-                    {ep.title && <span className="episode-title">{ep.title}</span>}
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        </div>
+                  <Checkbox
+                    checked={selectedVids.has(ep.vid)}
+                    onCheckedChange={() => toggleVid(ep.vid)}
+                  />
+                  <span className="grid min-w-0">
+                    <span className="text-sm font-medium">
+                      第 {String(ep.vid_index).padStart(2, '0')} 集
+                    </span>
+                    {ep.title && (
+                      <span className="truncate text-xs text-muted-foreground">{ep.title}</span>
+                    )}
+                  </span>
+                </label>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
       )}
     </div>
   );

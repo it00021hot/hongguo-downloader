@@ -1,6 +1,9 @@
 import React, { useState } from 'react';
-import './HongguoDownload.css';
-import { Search, Film, RefreshCw, ExternalLink } from './icons';
+import { ExternalLink, Film, RefreshCw, Search } from 'lucide-react';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
+import { Input } from '@/components/ui/input';
 
 /**
  * SearchPanel —— 通过内嵌浏览器嗅探 hongguoduanju.com 的搜索结果
@@ -65,103 +68,115 @@ function SearchPanel({ onSelectSeries, onSwitchToInput }) {
   };
 
   return (
-    <div className="hongguo-card">
-      <div className="card-header-title">
-        <Search size={18} />
-        <span>搜索短剧</span>
-      </div>
-
-      <div className="input-group">
-        <input
-          type="text"
-          className="input-field"
-          placeholder="输入剧名，例如：一村人养一个神"
-          value={keyword}
-          onChange={(e) => setKeyword(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && doSearch()}
-        />
-        <button className="btn btn-primary" onClick={doSearch} disabled={loading}>
-          {loading ? (
-            <>
-              <RefreshCw size={16} className="spin" />
-              <span>搜索中...</span>
-            </>
-          ) : (
-            <>
-              <Search size={16} />
-              <span>搜索</span>
-            </>
-          )}
-        </button>
-      </div>
-      <p className="settings-hint" style={{ marginTop: 8 }}>
-        搜索词会用内置浏览器打开 hongguoduanju.com 取回结果，选中后可一键拉取全集下载。
-      </p>
-
-      {error && <div className="alert alert-error">{error}</div>}
-
-      {loading && (
-        <div className="search-loading">
-          <RefreshCw size={18} className="spin" />
-          <span>正在嗅探搜索结果，首次可能需要几秒…</span>
-        </div>
-      )}
-
-      {results && results.length === 0 && !loading && (
-        <div className="search-empty">
-          <p>没有找到相关短剧{pageTitle ? `（页面标题：${pageTitle}）` : ''}</p>
-          <div className="search-empty-actions">
-            <button className="btn btn-outline" onClick={showBrowser}>
-              <ExternalLink size={15} />
-              显示浏览器窗口
-            </button>
-            {onSwitchToInput && (
-              <button className="btn btn-outline" onClick={onSwitchToInput}>
-                改用链接 / ID 下载
-              </button>
+    <Card>
+      <CardHeader>
+        <CardTitle>搜索短剧</CardTitle>
+      </CardHeader>
+      <CardContent className="flex flex-col gap-3">
+        <div className="flex gap-2">
+          <Input
+            placeholder="输入剧名，例如：一村人养一个神"
+            value={keyword}
+            onChange={(e) => setKeyword(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && doSearch()}
+          />
+          <Button onClick={doSearch} disabled={loading} className="shrink-0">
+            {loading ? (
+              <>
+                <RefreshCw className="animate-spin" />
+                搜索中...
+              </>
+            ) : (
+              <>
+                <Search />
+                搜索
+              </>
             )}
-          </div>
+          </Button>
         </div>
-      )}
+        <p className="text-xs text-muted-foreground">
+          搜索词会用内置浏览器打开 hongguoduanju.com 取回结果，选中后可一键拉取全集下载。
+        </p>
 
-      {results && results.length > 0 && (
-        <>
-          <div className="search-count">找到 {results.length} 部相关短剧</div>
-          <div className="search-grid">
-            {results.map((item) => (
-              <div
-                key={item.series_id}
-                className={`search-card ${pickingId === item.series_id ? 'picking' : ''}`}
-                onClick={() => pickingId === '' && pick(item)}
-                title={`点击查看并下载：${item.series_title}`}
-              >
-                <div className="search-cover">
-                  {item.cover ? (
-                    <img src={item.cover} alt={item.series_title} loading="lazy" />
-                  ) : (
-                    <div className="cover-placeholder">
-                      <Film size={22} />
-                    </div>
-                  )}
-                </div>
-                <div className="search-card-body">
-                  <div className="search-card-title">{item.series_title}</div>
-                  <div className="search-card-sub">
-                    {pickingId === item.series_id ? (
-                      <>
-                        <RefreshCw size={13} className="spin" /> 正在拉取分集…
-                      </>
+        {error && (
+          <Alert variant="destructive">
+            <AlertDescription>{error}</AlertDescription>
+          </Alert>
+        )}
+
+        {loading && (
+          <div className="flex items-center gap-2 text-sm text-muted-foreground">
+            <RefreshCw className="size-4 animate-spin" />
+            正在嗅探搜索结果，首次可能需要几秒…
+          </div>
+        )}
+
+        {results && results.length === 0 && !loading && (
+          <div className="flex flex-col items-start gap-3 rounded-lg border border-dashed p-6">
+            <p className="text-sm text-muted-foreground">
+              没有找到相关短剧{pageTitle ? `（页面标题：${pageTitle}）` : ''}
+            </p>
+            <div className="flex flex-wrap gap-2">
+              <Button variant="outline" size="sm" onClick={showBrowser}>
+                <ExternalLink />
+                显示浏览器窗口
+              </Button>
+              {onSwitchToInput && (
+                <Button variant="outline" size="sm" onClick={onSwitchToInput}>
+                  改用链接 / ID 下载
+                </Button>
+              )}
+            </div>
+          </div>
+        )}
+
+        {results && results.length > 0 && (
+          <>
+            <p className="text-sm text-muted-foreground">找到 {results.length} 部相关短剧</p>
+            <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-4">
+              {results.map((item) => (
+                <button
+                  key={item.series_id}
+                  type="button"
+                  disabled={pickingId !== ''}
+                  onClick={() => pick(item)}
+                  className="flex flex-col overflow-hidden rounded-lg border text-start transition-colors hover:bg-accent disabled:opacity-60"
+                  title={`点击查看并下载：${item.series_title}`}
+                >
+                  <div className="aspect-3/4 w-full bg-muted">
+                    {item.cover ? (
+                      <img
+                        src={item.cover}
+                        alt={item.series_title}
+                        loading="lazy"
+                        className="size-full object-cover"
+                      />
                     ) : (
-                      <>series_id {item.series_id}</>
+                      <div className="grid size-full place-items-center text-muted-foreground">
+                        <Film className="size-5" />
+                      </div>
                     )}
                   </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        </>
-      )}
-    </div>
+                  <div className="grid gap-0.5 p-2.5">
+                    <span className="line-clamp-2 text-sm font-medium">{item.series_title}</span>
+                    <span className="truncate text-xs text-muted-foreground">
+                      {pickingId === item.series_id ? (
+                        <span className="inline-flex items-center gap-1">
+                          <RefreshCw className="size-3 animate-spin" />
+                          正在拉取分集…
+                        </span>
+                      ) : (
+                        `series_id ${item.series_id}`
+                      )}
+                    </span>
+                  </div>
+                </button>
+              ))}
+            </div>
+          </>
+        )}
+      </CardContent>
+    </Card>
   );
 }
 

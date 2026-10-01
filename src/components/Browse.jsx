@@ -1,6 +1,20 @@
 import React, { useState, useEffect, useCallback, useMemo } from 'react';
-import './Browse.css';
-import { Film, RefreshCw, ExternalLink, Download, Play, Check, X, Sparkles } from './icons';
+import { toast as sonnerToast } from 'sonner';
+import { Check, Download, ExternalLink, Film, Play, RefreshCw } from 'lucide-react';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Skeleton } from '@/components/ui/skeleton';
+import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
+import {
+  Sheet,
+  SheetContent,
+  SheetDescription,
+  SheetFooter,
+  SheetHeader,
+  SheetTitle,
+} from '@/components/ui/sheet';
 
 /**
  * Browse —— 分类淘剧
@@ -21,7 +35,6 @@ function Browse({ onNavigate }) {
   const [meta, setMeta] = useState({ total: 0, totalPages: 0, genres: [] });
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
-  const [pageTitle, setPageTitle] = useState('');
 
   // 详情抽屉
   const [detail, setDetail] = useState(null); // { series_id, series_title, cover, episodes: [...] }
@@ -32,11 +45,10 @@ function Browse({ onNavigate }) {
 
   // 已下载统计（按 series_id -> 已下载集数）
   const [downloadedMap, setDownloadedMap] = useState({});
-  const [toast, setToast] = useState(null);
 
   const showToast = useCallback((text, type = 'success') => {
-    setToast({ text, type });
-    setTimeout(() => setToast(null), 3000);
+    if (type === 'error') sonnerToast.error(text);
+    else sonnerToast.success(text);
   }, []);
 
   const loadDownloadedMap = useCallback(async () => {
@@ -65,32 +77,28 @@ function Browse({ onNavigate }) {
     } catch (_) {}
   }, []);
 
-  const loadList = useCallback(
-    async (cat, gen, pg) => {
-      setLoading(true);
-      setError('');
-      try {
-        const res = await window.electronAPI.browseList({ category: cat, genre: gen, page: pg });
-        if (!res || !res.success) {
-          setError((res && res.error) || '加载失败，请重试');
-          setResults([]);
-        } else {
-          setResults(res.results || []);
-          setMeta({ total: res.total || 0, totalPages: res.totalPages || 0, genres: res.genres || [] });
-          setPageTitle(res.pageTitle || '');
-          if (!res.results || res.results.length === 0) {
-            setError('这一页没有取到内容，可试试换分类或「显示浏览器窗口」手动操作');
-          }
-        }
-      } catch (e) {
-        setError('加载异常: ' + e.message);
+  const loadList = useCallback(async (cat, gen, pg) => {
+    setLoading(true);
+    setError('');
+    try {
+      const res = await window.electronAPI.browseList({ category: cat, genre: gen, page: pg });
+      if (!res || !res.success) {
+        setError((res && res.error) || '加载失败，请重试');
         setResults([]);
-      } finally {
-        setLoading(false);
+      } else {
+        setResults(res.results || []);
+        setMeta({ total: res.total || 0, totalPages: res.totalPages || 0, genres: res.genres || [] });
+        if (!res.results || res.results.length === 0) {
+          setError('这一页没有取到内容，可试试换分类或「显示浏览器窗口」手动操作');
+        }
       }
-    },
-    []
-  );
+    } catch (e) {
+      setError('加载异常: ' + e.message);
+      setResults([]);
+    } finally {
+      setLoading(false);
+    }
+  }, []);
 
   useEffect(() => {
     loadCategories();
@@ -121,7 +129,6 @@ function Browse({ onNavigate }) {
     const next = Math.min(Math.max(1, p), max);
     if (next === page) return;
     setPage(next);
-    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   // ===== 打开某部剧 =====
@@ -149,7 +156,11 @@ function Browse({ onNavigate }) {
         progress: statusMap[ep.vid_index] ? statusMap[ep.vid_index].progress : 0,
         fileUrl: statusMap[ep.vid_index] ? statusMap[ep.vid_index].fileUrl : null,
       }));
-      setDetail({ ...data, episodes, completedCount: episodes.filter((e) => e.status === 'completed').length });
+      setDetail({
+        ...data,
+        episodes,
+        completedCount: episodes.filter((e) => e.status === 'completed').length,
+      });
       // 默认全选未下载的
       setSelectedIdx(new Set(episodes.filter((e) => e.status !== 'completed').map((e) => e.vid_index)));
     } catch (e) {
@@ -250,102 +261,120 @@ function Browse({ onNavigate }) {
   }, [totalPages, page]);
 
   return (
-    <div className="browse-container">
-      <div className="browse-header">
-        <div className="browse-title">
-          <Sparkles size={22} />
-          <h2>浏览</h2>
-        </div>
-        <div className="browse-header-right">
-          {meta.total > 0 && <span className="browse-stat">共 {meta.total} 部</span>}
-          <button className="btn btn-outline" onClick={showBrowser}>
-            <ExternalLink size={15} />
-            显示浏览器窗口
-          </button>
-        </div>
+    <div className="flex flex-col gap-4">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <p className="text-sm text-muted-foreground">
+          {meta.total > 0 ? `共 ${meta.total} 部` : '从分类里挑一部想看的短剧'}
+        </p>
+        <Button variant="outline" size="sm" onClick={showBrowser}>
+          <ExternalLink />
+          显示浏览器窗口
+        </Button>
       </div>
 
       {/* 分类 tab */}
-      <div className="browse-cats">
-        {(categories.length ? categories : [{ slug: 'real-drama', label: '真人剧' }]).map((c) => (
-          <button
-            key={c.slug}
-            className={`browse-cat ${category === c.slug ? 'active' : ''}`}
-            onClick={() => switchCategory(c.slug)}
-          >
-            {c.label}
-          </button>
-        ))}
-      </div>
+      <Tabs value={category} onValueChange={switchCategory}>
+        <TabsList>
+          {(categories.length ? categories : [{ slug: 'real-drama', label: '真人剧' }]).map((c) => (
+            <TabsTrigger key={c.slug} value={c.slug}>
+              {c.label}
+            </TabsTrigger>
+          ))}
+        </TabsList>
+      </Tabs>
 
       {/* 题材 chips */}
       {meta.genres.length > 0 && (
-        <div className="browse-genres">
-          <button
-            className={`genre-chip ${genre === '' ? 'active' : ''}`}
+        <div className="flex flex-wrap gap-2">
+          <Badge
+            variant={genre === '' ? 'default' : 'secondary'}
+            className="cursor-pointer"
             onClick={() => switchGenre('')}
           >
             全部
-          </button>
+          </Badge>
           {meta.genres.map((g) => (
-            <button
+            <Badge
               key={g.slug}
-              className={`genre-chip ${genre === g.slug ? 'active' : ''}`}
+              variant={genre === g.slug ? 'default' : 'secondary'}
+              className="cursor-pointer"
               onClick={() => switchGenre(g.slug)}
             >
               {g.label}
-            </button>
+            </Badge>
           ))}
         </div>
       )}
 
-      {error && <div className="alert alert-error">{error}</div>}
+      {error && (
+        <Alert variant="destructive">
+          <AlertDescription>{error}</AlertDescription>
+        </Alert>
+      )}
 
       {loading ? (
-        <div className="browse-loading">
-          <RefreshCw size={18} className="spin" />
-          <span>正在加载分类内容…</span>
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
+          {Array.from({ length: 10 }).map((_, i) => (
+            <div key={i} className="flex flex-col gap-2">
+              <Skeleton className="aspect-3/4 w-full rounded-lg" />
+              <Skeleton className="h-4 w-3/4" />
+            </div>
+          ))}
         </div>
       ) : (
-        <div className="browse-grid">
+        <div className="grid grid-cols-2 gap-4 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5">
           {results.map((item) => {
             const dl = downloadedMap[String(item.series_id)];
             return (
-              <div
+              <button
                 key={item.series_id}
-                className="browse-card"
+                type="button"
                 onClick={() => openSeries(item)}
+                className="group flex flex-col gap-2 text-start"
                 title={item.series_title}
               >
-                <div className="browse-cover">
+                <div className="relative aspect-3/4 overflow-hidden rounded-lg border bg-muted">
                   {item.cover ? (
-                    <img src={item.cover} alt={item.series_title} loading="lazy" />
+                    <img
+                      src={item.cover}
+                      alt={item.series_title}
+                      loading="lazy"
+                      className="size-full object-cover"
+                    />
                   ) : (
-                    <div className="cover-placeholder"><Film size={22} /></div>
+                    <div className="grid size-full place-items-center text-muted-foreground">
+                      <Film className="size-6" />
+                    </div>
                   )}
                   {item.episode_count > 0 && (
-                    <span className="browse-ep-badge">全{item.episode_count}集</span>
+                    <Badge variant="secondary" className="absolute top-1.5 right-1.5">
+                      全{item.episode_count}集
+                    </Badge>
                   )}
                   {dl && dl.completed > 0 && (
-                    <span className="browse-dl-badge">
-                      <Check size={11} /> {dl.completed}/{dl.total}
-                    </span>
+                    <Badge className="absolute top-1.5 left-1.5 gap-1">
+                      <Check className="size-3" />
+                      {dl.completed}/{dl.total}
+                    </Badge>
                   )}
-                  <div className="browse-hover">
-                    <span className="browse-hover-play">
-                      <Play size={16} /> {dl && dl.completed > 0 ? '播放' : '查看'}
+                  <div className="absolute inset-0 grid place-items-center bg-black/50 opacity-0 transition-opacity group-hover:opacity-100">
+                    <span className="flex items-center gap-1.5 text-sm font-medium text-white">
+                      <Play className="size-4" />
+                      {dl && dl.completed > 0 ? '播放' : '查看'}
                     </span>
                   </div>
                 </div>
-                <div className="browse-card-title">{item.series_title}</div>
+                <span className="line-clamp-2 text-sm font-medium">{item.series_title}</span>
                 {item.tags && item.tags.length > 0 && (
-                  <div className="browse-card-tags">
-                    {item.tags.map((t) => (
-                      <span key={t} className="browse-tag">{t}</span>
+                  <div className="flex flex-wrap gap-1">
+                    {item.tags.slice(0, 3).map((t) => (
+                      <Badge key={t} variant="outline" className="text-xs font-normal">
+                        {t}
+                      </Badge>
                     ))}
                   </div>
                 )}
-              </div>
+              </button>
             );
           })}
         </div>
@@ -353,118 +382,167 @@ function Browse({ onNavigate }) {
 
       {/* 分页 */}
       {totalPages > 1 && (
-        <div className="browse-pager">
-          <button className="pager-item" disabled={page <= 1} onClick={() => gotoPage(page - 1)}>‹</button>
+        <div className="flex items-center justify-center gap-1">
+          <Button
+            variant="outline"
+            size="icon"
+            disabled={page <= 1}
+            onClick={() => gotoPage(page - 1)}
+            aria-label="上一页"
+          >
+            ‹
+          </Button>
           {pageNumbers.map((n, i) => (
             <React.Fragment key={n}>
-              {i > 0 && n - pageNumbers[i - 1] > 1 && <span className="pager-gap">…</span>}
-              <button
-                className={`pager-item ${n === page ? 'active' : ''}`}
+              {i > 0 && n - pageNumbers[i - 1] > 1 && <span className="px-1 text-muted-foreground">…</span>}
+              <Button
+                variant={n === page ? 'default' : 'outline'}
+                size="icon"
                 onClick={() => gotoPage(n)}
               >
                 {n}
-              </button>
+              </Button>
             </React.Fragment>
           ))}
-          <button className="pager-item" disabled={page >= totalPages} onClick={() => gotoPage(page + 1)}>›</button>
+          <Button
+            variant="outline"
+            size="icon"
+            disabled={page >= totalPages}
+            onClick={() => gotoPage(page + 1)}
+            aria-label="下一页"
+          >
+            ›
+          </Button>
         </div>
       )}
 
       {/* ===== 剧集详情抽屉 ===== */}
-      {(detail || detailLoading) && (
-        <div className="browse-drawer-mask" onClick={() => !detailLoading && setDetail(null)}>
-          <div className="browse-drawer" onClick={(e) => e.stopPropagation()}>
-            <div className="browse-drawer-head">
-              <div className="browse-drawer-title">
-                <Film size={18} />
-                <span>{detail ? `《${detail.series_title}》` : '加载中…'}</span>
-              </div>
-              <button className="icon-btn" onClick={() => setDetail(null)} title="关闭">
-                <X size={16} />
-              </button>
+      <Sheet
+        open={Boolean(detail || detailLoading)}
+        onOpenChange={(open) => {
+          if (!open && !detailLoading) setDetail(null);
+        }}
+      >
+        <SheetContent side="right" className="flex w-full flex-col gap-0 sm:max-w-xl">
+          <SheetHeader>
+            <SheetTitle className="truncate">
+              {detail ? `《${detail.series_title}》` : '加载中…'}
+            </SheetTitle>
+            <SheetDescription>勾选要下载的集数，可直接下载或播放已下载的集</SheetDescription>
+          </SheetHeader>
+
+          {detailLoading && (
+            <div className="flex flex-1 items-center justify-center gap-2 text-sm text-muted-foreground">
+              <RefreshCw className="size-4 animate-spin" />
+              正在拉取全集…
             </div>
+          )}
 
-            {detailLoading && (
-              <div className="browse-loading">
-                <RefreshCw size={18} className="spin" />
-                <span>正在拉取全集…</span>
-              </div>
-            )}
-
-            {detail && (
-              <>
-                <div className="browse-drawer-body">
-                  <div className="browse-drawer-info">
-                    {detail.cover && <img src={detail.cover} alt="" className="browse-drawer-cover" />}
-                    <div className="browse-drawer-meta">
-                      <div className="browse-drawer-count">
-                        共 {detail.total} 集 · 已下载 <b>{detail.completedCount}</b> 集
-                      </div>
-                      <div className="browse-drawer-sub">选中 {selectedIdx.size} 集待下载</div>
-                      <div className="browse-range-row">
-                        <input
-                          type="text"
-                          className="input-field"
-                          placeholder="区间，如 1-50 或 1,3,5"
-                          value={rangeInput}
-                          onChange={(e) => setRangeInput(e.target.value)}
-                          onKeyDown={(e) => e.key === 'Enter' && applyRange(rangeInput)}
-                        />
-                        <button className="btn btn-outline btn-sm" onClick={() => applyRange(rangeInput)}>应用</button>
-                      </div>
-                      <div className="preset-row mt8">
-                        <button className="btn-chip" onClick={() => applyRange(`1-${Math.min(10, detail.total)}`)}>前10集</button>
-                        <button className="btn-chip" onClick={() => applyRange(`1-${Math.min(30, detail.total)}`)}>前30集</button>
-                        <button className="btn-chip" onClick={() => applyRange(`${Math.max(1, detail.total - 29)}-${detail.total}`)}>后30集</button>
-                        <button className="btn-chip" onClick={() => setSelectedIdx(new Set(detail.episodes.map((e) => e.vid_index)))}>全选</button>
-                        <button className="btn-chip" onClick={() => setSelectedIdx(new Set())}>清空</button>
-                      </div>
+          {detail && (
+            <>
+              <div className="flex flex-1 flex-col gap-4 overflow-y-auto p-4">
+                <div className="flex gap-4">
+                  {detail.cover && (
+                    <img
+                      src={detail.cover}
+                      alt=""
+                      className="aspect-3/4 w-24 shrink-0 rounded-lg border object-cover"
+                    />
+                  )}
+                  <div className="flex flex-1 flex-col gap-2">
+                    <p className="text-sm text-muted-foreground">
+                      共 {detail.total} 集 · 已下载 <b className="text-foreground">{detail.completedCount}</b> 集
+                    </p>
+                    <p className="text-sm text-muted-foreground">
+                      选中 <b className="text-foreground">{selectedIdx.size}</b> 集待下载
+                    </p>
+                    <div className="flex gap-2">
+                      <Input
+                        placeholder="区间，如 1-50 或 1,3,5"
+                        value={rangeInput}
+                        onChange={(e) => setRangeInput(e.target.value)}
+                        onKeyDown={(e) => e.key === 'Enter' && applyRange(rangeInput)}
+                      />
+                      <Button variant="outline" size="sm" onClick={() => applyRange(rangeInput)}>
+                        应用
+                      </Button>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => applyRange(`1-${Math.min(10, detail.total)}`)}
+                      >
+                        前10集
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={() => applyRange(`1-${Math.min(30, detail.total)}`)}
+                      >
+                        前30集
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={() =>
+                          applyRange(`${Math.max(1, detail.total - 29)}-${detail.total}`)
+                        }
+                      >
+                        后30集
+                      </Button>
+                      <Button
+                        size="sm"
+                        variant="secondary"
+                        onClick={() =>
+                          setSelectedIdx(new Set(detail.episodes.map((e) => e.vid_index)))
+                        }
+                      >
+                        全选
+                      </Button>
+                      <Button size="sm" variant="secondary" onClick={() => setSelectedIdx(new Set())}>
+                        清空
+                      </Button>
                     </div>
                   </div>
+                </div>
 
-                  <div className="browse-eps">
-                    {detail.episodes.map((ep) => (
-                      <button
+                <div className="grid grid-cols-6 gap-2 sm:grid-cols-8">
+                  {detail.episodes.map((ep) => {
+                    const picked = selectedIdx.has(ep.vid_index);
+                    const done = ep.status === 'completed';
+                    return (
+                      <Button
                         key={ep.vid_index}
-                        className={`ep-chip ep-${ep.status} ${selectedIdx.has(ep.vid_index) ? 'ep-picked' : ''}`}
+                        type="button"
+                        size="sm"
+                        variant={picked ? 'default' : done ? 'secondary' : 'outline'}
+                        className="relative h-9 gap-1 px-1"
                         onClick={() => toggleIdx(ep.vid_index)}
                         title={ep.title || `第 ${ep.vid_index} 集`}
                       >
-                        <span className="ep-num">{ep.vid_index}</span>
-                        {ep.status === 'completed' && <Check size={11} className="ep-badge" />}
-                        {selectedIdx.has(ep.vid_index) && <span className="ep-pick-dot" />}
-                      </button>
-                    ))}
-                  </div>
+                        {done && <Check className="size-3" />}
+                        <span className="tabular-nums">{ep.vid_index}</span>
+                      </Button>
+                    );
+                  })}
                 </div>
+              </div>
 
-                <div className="browse-drawer-foot">
-                  <button className="btn btn-outline" onClick={playNow}>
-                    <Play size={15} />
-                    立即播放
-                  </button>
-                  <div className="browse-foot-right">
-                    <button
-                      className="btn btn-primary"
-                      disabled={submitting || selectedIdx.size === 0}
-                      onClick={downloadSelected}
-                    >
-                      <Download size={15} />
-                      下载选中 ({selectedIdx.size})
-                    </button>
-                  </div>
-                </div>
-              </>
-            )}
-          </div>
-        </div>
-      )}
-
-      {toast && (
-        <div className={`dm-toast dm-toast-${toast.type}`} onClick={() => setToast(null)}>
-          {toast.text}
-        </div>
-      )}
+              <SheetFooter className="gap-2 sm:justify-between">
+                <Button variant="outline" onClick={playNow}>
+                  <Play />
+                  立即播放
+                </Button>
+                <Button disabled={submitting || selectedIdx.size === 0} onClick={downloadSelected}>
+                  <Download />
+                  下载选中 ({selectedIdx.size})
+                </Button>
+              </SheetFooter>
+            </>
+          )}
+        </SheetContent>
+      </Sheet>
     </div>
   );
 }

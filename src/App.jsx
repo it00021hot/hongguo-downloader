@@ -1,18 +1,17 @@
-import React, { useState, useEffect } from 'react';
-import { Film, Download, Settings, Play, Sparkles } from './components/icons';
-import HongguoDownload from './components/HongguoDownload';
-import DownloadManager from './components/DownloadManager';
-import SettingsPage from './components/Settings';
-import Player from './components/Player';
-import Browse from './components/Browse';
-
-const MENU = [
-  { id: 'browse', label: '浏览', icon: Sparkles },
-  { id: 'download', label: '红果下载', icon: Film },
-  { id: 'player', label: '播放', icon: Play },
-  { id: 'manager', label: '下载管理', icon: Download },
-  { id: 'settings', label: '设置', icon: Settings },
-];
+import React, { useEffect, useState } from 'react';
+import { SidebarInset, SidebarProvider } from '@/components/ui/sidebar';
+import { Toaster } from '@/components/ui/sonner';
+import { AppSidebar } from '@/components/layout/app-sidebar';
+import { Header } from '@/components/layout/header';
+import { Main } from '@/components/layout/main';
+import { SkipToMain } from '@/components/skip-to-main';
+import { ThemeSwitch } from '@/components/theme-switch';
+import { NAV_ITEMS } from '@/components/layout/sidebar-nav';
+import HongguoDownload from '@/components/HongguoDownload';
+import DownloadManager from '@/components/DownloadManager';
+import SettingsPage from '@/components/Settings';
+import Player from '@/components/Player';
+import Browse from '@/components/Browse';
 
 export default function App() {
   const [page, setPage] = useState('browse');
@@ -46,50 +45,38 @@ export default function App() {
       case 'settings':
         return <SettingsPage />;
       case 'download':
-      default:
         return <HongguoDownload onNavigate={setPage} />;
     }
   };
 
+  const current = NAV_ITEMS[page];
+
   return (
-    <div className="app-layout">
-      {/* 左侧边栏 */}
-      <div className="sidebar">
-        <div className="sidebar-brand">
-          <div className="logo">
-            <Film size={18} />
+    <SidebarProvider>
+      <SkipToMain />
+      <AppSidebar
+        activePage={page}
+        brand={appInfo ? appInfo.brand : '红果短剧下载器'}
+        version={appInfo ? appInfo.version : ''}
+        onNavigate={setPage}
+      />
+      <SidebarInset>
+        <Header>
+          <div className="flex flex-1 items-center justify-between gap-4">
+            <div className="grid gap-0.5">
+              <h1 className="truncate text-base font-semibold">{current.title}</h1>
+              <p className="hidden truncate text-xs text-muted-foreground md:block">
+                {current.description}
+              </p>
+            </div>
+            <ThemeSwitch />
           </div>
-          <div>
-            <div className="brand-text">{appInfo ? appInfo.brand : '红果短剧下载器'}</div>
-            <div className="brand-sub">红果短剧下载器 v{appInfo ? appInfo.version : ''}</div>
-          </div>
-        </div>
-
-        <div className="sidebar-menu">
-          {MENU.map((item) => {
-            const Icon = item.icon;
-            return (
-              <div
-                key={item.id}
-                className={`sidebar-item ${page === item.id ? 'active' : ''}`}
-                onClick={() => setPage(item.id)}
-              >
-                <Icon size={18} />
-                <span>{item.label}</span>
-              </div>
-            );
-          })}
-        </div>
-
-        <div className="sidebar-footer">
-          <div className="footer-note">AES-128 CENC 原生解密 · 无水印</div>
-        </div>
-      </div>
-
-      {/* 右侧主体区域 */}
-      <div className="main-wrapper">
-        <div className="main-content">{renderPage()}</div>
-      </div>
-    </div>
+        </Header>
+        <Main id="content" className="flex-1 overflow-y-auto">
+          {renderPage()}
+        </Main>
+      </SidebarInset>
+      <Toaster />
+    </SidebarProvider>
   );
 }

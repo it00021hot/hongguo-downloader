@@ -1,7 +1,34 @@
 import React, { useState, useEffect } from 'react';
-import './Settings.css';
-import { Settings, Folder, Check, Globe, X, RefreshCw, AlertCircle } from './icons';
-
+import { Check, FolderOpen, Globe, RefreshCw, TriangleAlert } from 'lucide-react';
+import { Button } from '@/components/ui/button';
+import { Input } from '@/components/ui/input';
+import { Label } from '@/components/ui/label';
+import { Switch } from '@/components/ui/switch';
+import { Badge } from '@/components/ui/badge';
+import { Alert, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from '@/components/ui/card';
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from '@/components/ui/dialog';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { Separator } from '@/components/ui/separator';
 
 const FORMAT_PRESETS = [
   { label: '剧名_第N集', value: '剧名 集数' },
@@ -22,6 +49,8 @@ const PORT_PRESETS = [
   { label: 'Shadowsocks', port: 1080 },
   { label: 'Burp / 抓包', port: 8080 },
 ];
+
+const CONCURRENT_OPTIONS = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 
 /** 已保存设置 -> 当前生效的代理描述 */
 function describeProxy(settings) {
@@ -115,253 +144,273 @@ function SettingsPage() {
   };
 
   if (!settings) {
-    return <div className="settings-container">加载中...</div>;
+    return <p className="text-sm text-muted-foreground">加载中...</p>;
   }
 
   const proxyInfo = describeProxy(settings);
-  const mode = proxyDraft ? proxyDraft.proxy_mode : 'system';
+  const draftMode = proxyDraft ? proxyDraft.proxy_mode : 'system';
+  const draftModeDesc = PROXY_MODES.find((m) => m.value === draftMode)?.desc;
+  const draftEnabled = proxyDraft ? proxyDraft.proxy_enabled : false;
+  const disableDraftField = !draftEnabled;
 
   return (
-    <div className="settings-container">
-      <div className="settings-header">
-        <Settings size={22} />
-        <h2>设置</h2>
-      </div>
+    <div className="mx-auto flex max-w-3xl flex-col gap-6 pb-10">
+      <Card>
+        <CardHeader>
+          <CardTitle>下载目录</CardTitle>
+          <CardDescription>
+            文件将保存到 <code className="font-mono">下载目录/红果短剧/剧名/</code> 下
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex gap-2">
+          <Input
+            value={settings.root || ''}
+            onChange={(e) => update('root', e.target.value)}
+            placeholder="选择下载保存目录"
+          />
+          <Button variant="outline" onClick={selectFolder} className="shrink-0">
+            <FolderOpen />
+            选择文件夹
+          </Button>
+        </CardContent>
+      </Card>
 
-      <div className="settings-card">
-        <div className="settings-group">
-          <label className="settings-label">下载目录</label>
-          <div className="folder-row">
-            <input
-              type="text"
-              className="input-field"
-              value={settings.root || ''}
-              onChange={(e) => update('root', e.target.value)}
-              placeholder="选择下载保存目录"
-            />
-            <button className="btn btn-outline" onClick={selectFolder}>
-              <Folder size={16} />
-              选择文件夹
-            </button>
-          </div>
-          <p className="settings-hint">文件将保存到 <code>下载目录/红果短剧/剧名/</code> 下</p>
-        </div>
-
-        <div className="settings-group">
-          <label className="settings-label">文件命名规则</label>
-          <div className="preset-row">
+      <Card>
+        <CardHeader>
+          <CardTitle>文件命名规则</CardTitle>
+          <CardDescription>
+            可用变量：<code className="font-mono">剧名</code>（series_title）·
+            <code className="font-mono">集数</code>（vid_index，如 001）·
+            <code className="font-mono">标题</code>（ep_title）
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3">
+          <div className="flex flex-wrap gap-2">
             {FORMAT_PRESETS.map((p) => (
-              <button
+              <Button
                 key={p.value}
-                className={`btn-chip ${settings.name_format === p.value ? 'btn-chip-primary' : ''}`}
+                size="sm"
+                variant={settings.name_format === p.value ? 'default' : 'outline'}
                 onClick={() => update('name_format', p.value)}
               >
                 {p.label}
-              </button>
+              </Button>
             ))}
           </div>
-          <input
-            type="text"
-            className="input-field mt8"
+          <Input
             value={settings.name_format || ''}
             onChange={(e) => update('name_format', e.target.value)}
           />
-          <p className="settings-hint">
-            可用变量：<code>剧名</code>（series_title）· <code>集数</code>（vid_index，如 001）· <code>标题</code>（ep_title）
-          </p>
-        </div>
+        </CardContent>
+      </Card>
 
-        <div className="settings-group">
-          <label className="settings-label">最大并发下载数</label>
-          <select
-            className="input-field select-field"
-            value={settings.max_concurrent || 3}
-            onChange={(e) => update('max_concurrent', parseInt(e.target.value, 10))}
+      <Card>
+        <CardHeader>
+          <CardTitle>最大并发下载数</CardTitle>
+          <CardDescription>
+            同时下载 <b>{settings.max_concurrent || 3}</b> 集（保存后立即生效）。并发越高越快，
+            但可能触发接口限流，建议 3~5。
+          </CardDescription>
+        </CardHeader>
+        <CardContent>
+          <Select
+            value={String(settings.max_concurrent || 3)}
+            onValueChange={(v) => update('max_concurrent', parseInt(v, 10))}
           >
-            {[1, 2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => (
-              <option key={n} value={n}>{n} 个同时下载</option>
-            ))}
-          </select>
-          <p className="settings-hint">
-            同时下载 <b>{settings.max_concurrent || 3}</b> 集（保存后立即生效）。
-            并发越高越快，但可能触发接口限流，建议 3~5。
-          </p>
-        </div>
+            <SelectTrigger className="w-56">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {CONCURRENT_OPTIONS.map((n) => (
+                <SelectItem key={n} value={String(n)}>
+                  {n} 个同时下载
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </CardContent>
+      </Card>
 
-        <div className="settings-group">
-          <label className="settings-label">网络代理</label>
-          <div className="proxy-status-row">
-            <span className={`proxy-dot ${proxyInfo.on ? 'proxy-dot-on' : 'proxy-dot-off'}`} />
-            <span className="proxy-status-text">
-              {proxyInfo.on ? <>已启用：<code>{proxyInfo.text}</code></> : proxyInfo.text}
-            </span>
-            <button className="btn btn-outline btn-sm" onClick={openProxyModal}>
-              <Globe size={15} />
-              配置代理
-            </button>
-          </div>
-          <p className="settings-hint">
-            本机有代理（Clash / V2rayN 等）时在这里填上，解析剧集与下载视频都会走该代理。保存后立即生效，无需重启。
-          </p>
-        </div>
+      <Card>
+        <CardHeader>
+          <CardTitle>网络代理</CardTitle>
+          <CardDescription>
+            本机有代理（Clash / V2rayN 等）时在这里填上，解析剧集与下载视频都会走该代理。保存后立即生效，
+            无需重启。
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-wrap items-center gap-3">
+          <Badge variant={proxyInfo.on ? 'default' : 'secondary'}>
+            {proxyInfo.on ? '已启用' : '未启用'}
+          </Badge>
+          <span className="text-sm text-muted-foreground">{proxyInfo.text}</span>
+          <Button variant="outline" size="sm" onClick={openProxyModal} className="ml-auto">
+            <Globe />
+            配置代理
+          </Button>
+        </CardContent>
+      </Card>
 
-        <div className="settings-footer">
-          <button className="btn btn-primary" onClick={save}>
-            {saved ? <><Check size={16} /> 已保存</> : '保存设置'}
-          </button>
-        </div>
+      <div className="flex justify-end">
+        <Button onClick={save}>
+          {saved ? (
+            <>
+              <Check />
+              已保存
+            </>
+          ) : (
+            '保存设置'
+          )}
+        </Button>
       </div>
 
-      {proxyOpen && proxyDraft && (
-        <div className="proxy-modal-mask" onClick={() => setProxyOpen(false)}>
-          <div className="proxy-modal" onClick={(e) => e.stopPropagation()}>
-            <div className="proxy-modal-head">
-              <div className="proxy-modal-title">
-                <Globe size={18} />
-                <span>网络代理设置</span>
-              </div>
-              <button className="icon-btn" title="关闭" onClick={() => setProxyOpen(false)}>
-                <X size={16} />
-              </button>
+      <Dialog open={proxyOpen} onOpenChange={setProxyOpen}>
+        <DialogContent className="sm:max-w-lg">
+          <DialogHeader>
+            <DialogTitle>网络代理设置</DialogTitle>
+            <DialogDescription>
+              关闭「启用代理」时所有请求直连，代理配置不会生效。
+            </DialogDescription>
+          </DialogHeader>
+
+          <div className="flex items-center justify-between rounded-lg border p-3">
+            <Label htmlFor="proxy-enabled" className="grid gap-0.5">
+              启用代理
+              <span className="text-xs font-normal text-muted-foreground">
+                关闭时代理不生效，所有请求直连
+              </span>
+            </Label>
+            <Switch
+              id="proxy-enabled"
+              checked={draftEnabled}
+              onCheckedChange={(v) => patchDraft('proxy_enabled', v)}
+            />
+          </div>
+
+          <div className="grid gap-5">
+            <div className="grid gap-2">
+              <Label>代理模式</Label>
+              <Select
+                value={draftMode}
+                onValueChange={(v) => patchDraft('proxy_mode', v)}
+                disabled={disableDraftField}
+              >
+                <SelectTrigger className="w-full">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {PROXY_MODES.map((m) => (
+                    <SelectItem key={m.value} value={m.value}>
+                      {m.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-xs text-muted-foreground">{draftModeDesc}</p>
             </div>
 
-            <div className="proxy-modal-body">
-              <label className="proxy-switch-row">
-                <input
-                  type="checkbox"
-                  checked={proxyDraft.proxy_enabled}
-                  onChange={(e) => patchDraft('proxy_enabled', e.target.checked)}
-                />
-                <span className="proxy-switch-text">
-                  启用代理
-                  <em>关闭时代理不生效，所有请求直连</em>
-                </span>
-              </label>
-
-              <div className={`proxy-fields ${proxyDraft.proxy_enabled ? '' : 'proxy-fields-disabled'}`}>
-                <div className="settings-group">
-                  <label className="settings-label">代理模式</label>
-                  <div className="proxy-mode-list">
-                    {PROXY_MODES.map((m) => (
-                      <label
-                        key={m.value}
-                        className={`proxy-mode-item ${mode === m.value ? 'active' : ''}`}
+            {draftMode === 'custom' && (
+              <>
+                <div className="grid gap-2">
+                  <Label htmlFor="proxy-host">代理地址</Label>
+                  <div className="flex items-center gap-2">
+                    <Input
+                      id="proxy-host"
+                      placeholder="127.0.0.1"
+                      value={proxyDraft.proxy_host}
+                      disabled={disableDraftField}
+                      onChange={(e) => patchDraft('proxy_host', e.target.value)}
+                    />
+                    <span className="text-muted-foreground">:</span>
+                    <Input
+                      className="w-28"
+                      placeholder="7890"
+                      type="number"
+                      min="1"
+                      max="65535"
+                      value={proxyDraft.proxy_port}
+                      disabled={disableDraftField}
+                      onChange={(e) => patchDraft('proxy_port', e.target.value)}
+                    />
+                  </div>
+                  <div className="flex flex-wrap gap-2 pt-1">
+                    {PORT_PRESETS.map((p) => (
+                      <Button
+                        key={p.port}
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        disabled={disableDraftField}
+                        onClick={() => patchDraft('proxy_port', p.port)}
                       >
-                        <input
-                          type="radio"
-                          name="proxy_mode"
-                          value={m.value}
-                          checked={mode === m.value}
-                          disabled={!proxyDraft.proxy_enabled}
-                          onChange={() => patchDraft('proxy_mode', m.value)}
-                        />
-                        <span className="proxy-mode-body">
-                          <b>{m.label}</b>
-                          <em>{m.desc}</em>
-                        </span>
-                      </label>
+                        {p.label} {p.port}
+                      </Button>
                     ))}
                   </div>
                 </div>
 
-                {mode === 'custom' && (
-                  <div className="settings-group">
-                    <label className="settings-label">代理地址</label>
-                    <div className="proxy-host-row">
-                      <input
-                        type="text"
-                        className="input-field"
-                        placeholder="127.0.0.1"
-                        value={proxyDraft.proxy_host}
-                        disabled={!proxyDraft.proxy_enabled}
-                        onChange={(e) => patchDraft('proxy_host', e.target.value)}
-                      />
-                      <span className="proxy-colon">:</span>
-                      <input
-                        type="number"
-                        className="input-field proxy-port"
-                        placeholder="7890"
-                        min="1"
-                        max="65535"
-                        value={proxyDraft.proxy_port}
-                        disabled={!proxyDraft.proxy_enabled}
-                        onChange={(e) => patchDraft('proxy_port', e.target.value)}
-                      />
-                    </div>
-                    <div className="preset-row mt8">
-                      {PORT_PRESETS.map((p) => (
-                        <button
-                          key={p.port}
-                          type="button"
-                          className="btn-chip"
-                          disabled={!proxyDraft.proxy_enabled}
-                          onClick={() => patchDraft('proxy_port', p.port)}
-                        >
-                          {p.label} {p.port}
-                        </button>
-                      ))}
-                    </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="proxy-user">代理认证（可选）</Label>
+                  <div className="flex gap-2">
+                    <Input
+                      id="proxy-user"
+                      placeholder="用户名"
+                      autoComplete="off"
+                      value={proxyDraft.proxy_username}
+                      disabled={disableDraftField}
+                      onChange={(e) => patchDraft('proxy_username', e.target.value)}
+                    />
+                    <Input
+                      type="password"
+                      placeholder="密码"
+                      autoComplete="new-password"
+                      value={proxyDraft.proxy_password}
+                      disabled={disableDraftField}
+                      onChange={(e) => patchDraft('proxy_password', e.target.value)}
+                    />
                   </div>
-                )}
-
-                {mode === 'custom' && (
-                  <div className="settings-group">
-                    <label className="settings-label">代理认证（可选）</label>
-                    <div className="proxy-auth-row">
-                      <input
-                        type="text"
-                        className="input-field"
-                        placeholder="用户名"
-                        autoComplete="off"
-                        value={proxyDraft.proxy_username}
-                        disabled={!proxyDraft.proxy_enabled}
-                        onChange={(e) => patchDraft('proxy_username', e.target.value)}
-                      />
-                      <input
-                        type="password"
-                        className="input-field"
-                        placeholder="密码"
-                        autoComplete="new-password"
-                        value={proxyDraft.proxy_password}
-                        disabled={!proxyDraft.proxy_enabled}
-                        onChange={(e) => patchDraft('proxy_password', e.target.value)}
-                      />
-                    </div>
-                    <p className="settings-hint">代理无需认证时留空即可</p>
-                  </div>
-                )}
-              </div>
-
-              {testResult && (
-                <div className={`proxy-test-result ${testResult.success ? 'ok' : 'fail'}`}>
-                  {testResult.success ? <Check size={15} /> : <AlertCircle size={15} />}
-                  <span>
-                    {testResult.success ? testResult.message : testResult.error}
-                    {testResult.success && testResult.via ? ` · 经由 ${testResult.via}` : ''}
-                  </span>
+                  <p className="text-xs text-muted-foreground">代理无需认证时留空即可</p>
                 </div>
-              )}
-            </div>
+              </>
+            )}
 
-            <div className="proxy-modal-foot">
-              <button className="btn btn-outline" onClick={runTest} disabled={testing}>
-                <RefreshCw size={15} />
-                {testing ? '测试中...' : '测试连接'}
-              </button>
-              <div className="proxy-foot-right">
-                <button className="btn btn-outline" onClick={() => setProxyOpen(false)}>取消</button>
-                <button className="btn btn-primary" onClick={applyProxy}>
-                  <Check size={15} />
-                  保存并生效
-                </button>
-              </div>
-            </div>
+            {testResult && (
+              <Alert variant={testResult.success ? 'default' : 'destructive'}>
+                {testResult.success ? (
+                  <Check className="size-4" />
+                ) : (
+                  <TriangleAlert className="size-4" />
+                )}
+                <AlertTitle>{testResult.success ? '连接成功' : '连接失败'}</AlertTitle>
+                <AlertDescription>
+                  {testResult.success ? testResult.message : testResult.error}
+                  {testResult.success && testResult.via ? ` · 经由 ${testResult.via}` : ''}
+                </AlertDescription>
+              </Alert>
+            )}
           </div>
-        </div>
-      )}
+
+          <Separator />
+
+          <DialogFooter className="sm:justify-between">
+            <Button variant="outline" onClick={runTest} disabled={testing}>
+              <RefreshCw className={testing ? 'animate-spin' : undefined} />
+              {testing ? '测试中...' : '测试连接'}
+            </Button>
+            <div className="flex gap-2">
+              <Button variant="outline" onClick={() => setProxyOpen(false)}>
+                取消
+              </Button>
+              <Button onClick={applyProxy}>
+                <Check />
+                保存并生效
+              </Button>
+            </div>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
     </div>
   );
 }
-
 
 export default SettingsPage;

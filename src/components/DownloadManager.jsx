@@ -1,6 +1,52 @@
-import React, { useState, useEffect, useRef, useCallback, useMemo } from 'react';
-import './DownloadManager.css';
-import { Download, Trash2, RefreshCw, X, Film, Square, Folder, Zap, CheckSquare, Play, Pause, Layers } from './icons';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
+import { toast as sonnerToast } from 'sonner';
+import {
+  CheckSquare,
+  Download,
+  Film,
+  FolderOpen,
+  Layers,
+  Pause,
+  Play,
+  RefreshCw,
+  Square,
+  Trash2,
+  X,
+  Zap,
+} from 'lucide-react';
+import { Alert, AlertDescription } from '@/components/ui/alert';
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from '@/components/ui/alert-dialog';
+import { Badge } from '@/components/ui/badge';
+import { Button } from '@/components/ui/button';
+import { Card, CardContent } from '@/components/ui/card';
+import { Checkbox } from '@/components/ui/checkbox';
+import { Label } from '@/components/ui/label';
+import { Progress } from '@/components/ui/progress';
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@/components/ui/select';
+import { Separator } from '@/components/ui/separator';
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from '@/components/ui/table';
 
 const STATUS_TEXT = {
   pending: '等待中',
@@ -8,6 +54,14 @@ const STATUS_TEXT = {
   completed: '已完成',
   failed: '失败',
   stopped: '已停止',
+};
+
+const STATUS_BADGE = {
+  pending: 'secondary',
+  downloading: 'default',
+  completed: 'outline',
+  failed: 'destructive',
+  stopped: 'secondary',
 };
 
 const STATUS_ORDER = {
@@ -30,7 +84,6 @@ function sortTasks(list) {
   });
 }
 
-
 function fmtBytes(bytes) {
   if (!bytes || bytes <= 0) return '0 B';
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -46,7 +99,6 @@ function fmtBytes(bytes) {
 function DownloadManager({ onNavigate }) {
   const [tasks, setTasks] = useState([]);
   const [selected, setSelected] = useState(new Set());
-  const [toast, setToast] = useState(null);
   const [queue, setQueue] = useState({ active: 0, queued: 0, maxConcurrent: 3 });
   const [seriesList, setSeriesList] = useState([]);
   const [mergeSeriesId, setMergeSeriesId] = useState('');
@@ -54,8 +106,11 @@ function DownloadManager({ onNavigate }) {
   const [mergeTasks, setMergeTasks] = useState([]);
   const [confirmAsk, setConfirmAsk] = useState(null); // 删除确认（可勾选删除本地文件）
   const [mergeAsk, setMergeAsk] = useState(false);    // 合并格式选择
-  const listenersRef = useRef([]);
-  const toastTimerRef = useRef(null);
+
+  const showToast = useCallback((text, type = 'success') => {
+    if (type === 'error') sonnerToast.error(text);
+    else sonnerToast.success(text);
+  }, []);
 
   const refresh = useCallback(async () => {
     const list = await window.electronAPI.getDownloadTasks();
@@ -82,16 +137,6 @@ function DownloadManager({ onNavigate }) {
       const list = (await window.electronAPI.getMergeTasks()) || [];
       setMergeTasks(list);
     } catch (_) {}
-  }, []);
-
-  const showToast = useCallback((text, type = 'success') => {
-    setToast({ text, type });
-    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
-    toastTimerRef.current = setTimeout(() => setToast(null), 3200);
-  }, []);
-
-  useEffect(() => () => {
-    if (toastTimerRef.current) clearTimeout(toastTimerRef.current);
   }, []);
 
   useEffect(() => {
@@ -133,16 +178,8 @@ function DownloadManager({ onNavigate }) {
         showToast('合并失败：' + (data.error || '未知错误'), 'error');
       }),
     ];
-    listenersRef.current = cleanups;
     return () => cleanups.forEach((c) => c());
   }, [refresh, loadQueue, loadMergeTasks, showToast]);
-
-  // 队列状态轮询：让「进行中 x / 并发上限 y」实时可见
-  useEffect(() => {
-    refresh();
-    loadSeriesList();
-    loadMergeTasks();
-  }, [refresh, loadSeriesList, loadMergeTasks]);
 
   // 队列状态轮询：让「进行中 x / 并发上限 y」实时可见
   useEffect(() => {
@@ -169,20 +206,6 @@ function DownloadManager({ onNavigate }) {
 
   const clearSelection = () => setSelected(new Set());
 
-  const deleteTask = async (id) => {
-    await window.electronAPI.deleteTask(id);
-    refresh();
-  };
-
-  const fmtSize = (b) => {
-    if (!b || b <= 0) return '0 B';
-    const u = ['B', 'KB', 'MB', 'GB', 'TB'];
-    let i = 0;
-    let v = b;
-    while (v >= 1024 && i < u.length - 1) { v /= 1024; i++; }
-    return v.toFixed(v >= 100 || i === 0 ? 0 : 1) + ' ' + u[i];
-  };
-
   /** 弹删除确认：默认只删记录，可勾选同时删除本地文件 */
   const askDelete = (list, label) => {
     const items = (list || []).filter(Boolean);
@@ -202,7 +225,7 @@ function DownloadManager({ onNavigate }) {
         await refresh();
         if (res && res.success) {
           showToast(deleteFiles
-            ? `已删除 ${res.count} 个任务，释放 ${fmtSize(res.freed)}`
+            ? `已删除 ${res.count} 个任务，释放 ${fmtBytes(res.freed)}`
             : `已删除 ${res.count} 个任务记录（本地文件已保留）`);
         }
       },
@@ -213,6 +236,7 @@ function DownloadManager({ onNavigate }) {
     if (selected.size === 0) return;
     askDelete(tasks.filter((t) => selected.has(t.id)), '删除选中任务');
   };
+
   const retrySelected = async () => {
     if (selected.size === 0) return;
     const res = await window.electronAPI.retryTasks(Array.from(selected));
@@ -314,11 +338,7 @@ function DownloadManager({ onNavigate }) {
 
   const activeCount = tasks.filter((t) => t.status === 'downloading' || t.status === 'pending').length;
   const completedCount = tasks.filter((t) => t.status === 'completed').length;
-  const failedTasks = useMemo(
-    () => tasks.filter((t) => t.status === 'failed' || t.status === 'stopped'),
-    [tasks]
-  );
-  const failedCount = failedTasks.length;
+  const failedCount = tasks.filter((t) => t.status === 'failed' || t.status === 'stopped').length;
 
   // 可暂停的任务：正在下载、等待中、已停止（未跑完的都算）
   const pausableCount = useMemo(
@@ -337,339 +357,423 @@ function DownloadManager({ onNavigate }) {
   );
 
   return (
-    <div className="dm-container">
-      <div className="dm-header">
-        <div className="dm-title">
-          <Download size={22} />
-          <h2>下载管理</h2>
-        </div>
-        <div className="dm-stats">
-          <span className="stat stat-active">进行中 {activeCount}</span>
-          <span className="stat stat-done">已完成 {completedCount}</span>
-          <span className="stat stat-fail">失败/停止 {failedCount}</span>
-        </div>
+    <div className="flex flex-col gap-4 pb-10">
+      {/* 概览 */}
+      <div className="flex flex-wrap items-center gap-2">
+        <Badge>进行中 {activeCount}</Badge>
+        <Badge variant="outline">已完成 {completedCount}</Badge>
+        <Badge variant="destructive">失败/停止 {failedCount}</Badge>
+        {onNavigate && (
+          <Button size="sm" className="ml-auto" onClick={() => onNavigate('download')}>
+            <Film />
+            去下载
+          </Button>
+        )}
       </div>
 
-      <div className="dm-toolbar">
-        <button
-          className="btn btn-primary"
-          onClick={resumeAll}
-          disabled={queue.active > 0 || pausableCount === 0}
-          title="把等待中 / 已停止 / 失败的任务全部排队开跑"
-        >
-          <Play size={15} />
-          一键启动
-        </button>
-        <button
-          className="btn btn-danger-solid"
-          onClick={pauseAll}
-          disabled={pausableCount === 0}
-          title="暂停全部：取消正在下载的并清空等待队列"
-        >
-          <Pause size={15} />
-          一键暂停
-        </button>
-        <button
-          className="btn btn-primary"
-          onClick={retryAllFailed}
-          disabled={failedCount === 0}
-          title="把所有失败/已停止的任务一次性重新加入下载队列"
-        >
-          <Zap size={15} />
-          {failedCount > 0 ? `一键重试全部失败 (${failedCount})` : '一键重试全部失败'}
-        </button>
-        <button
-          className="btn btn-outline"
-          onClick={selectAllFailed}
-          disabled={failedCount === 0}
-          title="一键勾选所有失败/已停止的任务"
-        >
-          <CheckSquare size={15} />
-          {failedCount > 0 ? `选中失败项 (${failedCount})` : '选中失败项'}
-        </button>
-        <button className="btn btn-outline" onClick={retrySelected} disabled={retryableSelectedCount === 0}>
-          <RefreshCw size={15} />
-          重试选中 ({retryableSelectedCount})
-        </button>
-        <button className="btn btn-outline" onClick={deleteSelected} disabled={selected.size === 0}>
-          <Trash2 size={15} />
-          删除选中
-        </button>
-        <button className="btn btn-outline" onClick={clearCompleted} disabled={completedCount === 0}>
-          <X size={15} />
-          清空已完成
-        </button>
-        <button className="btn btn-outline" onClick={clearSelection} disabled={selected.size === 0}>
-          取消选择
-        </button>
-        <button
-          className="btn btn-outline"
-          onClick={async () => {
-            const r = await window.electronAPI.rescanDownloads();
-            await refresh();
-            showToast(r && r.success
-              ? (r.count > 0 ? `已从磁盘补回 ${r.count} 条下载记录` : '没有发现未登记的文件')
-              : '扫描失败');
-          }}
-          title="扫描下载目录，把磁盘上已有但列表里没有的文件补登记回来"
-        >
-          <RefreshCw size={15} />
-          扫描目录补登记
-        </button>
-        {seriesList.length > 0 && (
-          <div className="merge-inline">
-            <select
-              className="input-field merge-select"
-              value={mergeSeriesId}
-              onChange={(e) => setMergeSeriesId(e.target.value)}
-              title="选择要合并的短剧"
-            >
-              {seriesList.map((s) => (
-                <option key={s.series_id} value={String(s.series_id)}>
-                  {s.series_title}
-                </option>
-              ))}
-            </select>
-            <button className="btn btn-outline" onClick={() => setMergeAsk(true)} disabled={merging} title="把该剧已下载的分集合并成单个 mp4">
-              <Layers size={15} />
-              {merging ? '合并中...' : '一键合并本剧'}
-            </button>
-          </div>
-        )}
-        {onNavigate && (
-          <button className="btn btn-primary dm-toolbar-end" onClick={() => onNavigate('download')}>
-            <Film size={15} />
-            去下载
-          </button>
-        )}
-      </div>
+      {/* 工具栏 */}
+      <Card>
+        <CardContent className="flex flex-wrap items-center gap-2">
+          <Button
+            onClick={resumeAll}
+            disabled={queue.active > 0 || pausableCount === 0}
+            title="把等待中 / 已停止 / 失败的任务全部排队开跑"
+          >
+            <Play />
+            一键启动
+          </Button>
+          <Button
+            variant="destructive"
+            onClick={pauseAll}
+            disabled={pausableCount === 0}
+            title="暂停全部：取消正在下载的并清空等待队列"
+          >
+            <Pause />
+            一键暂停
+          </Button>
+          <Button
+            variant="outline"
+            onClick={retryAllFailed}
+            disabled={failedCount === 0}
+            title="把所有失败/已停止的任务一次性重新加入下载队列"
+          >
+            <Zap />
+            {failedCount > 0 ? `一键重试全部失败 (${failedCount})` : '一键重试全部失败'}
+          </Button>
+          <Separator orientation="vertical" className="h-5" />
+          <Button
+            variant="outline"
+            onClick={selectAllFailed}
+            disabled={failedCount === 0}
+            title="一键勾选所有失败/已停止的任务"
+          >
+            <CheckSquare />
+            {failedCount > 0 ? `选中失败项 (${failedCount})` : '选中失败项'}
+          </Button>
+          <Button variant="outline" onClick={retrySelected} disabled={retryableSelectedCount === 0}>
+            <RefreshCw />
+            重试选中 ({retryableSelectedCount})
+          </Button>
+          <Button variant="outline" onClick={deleteSelected} disabled={selected.size === 0}>
+            <Trash2 />
+            删除选中
+          </Button>
+          <Button variant="outline" onClick={clearCompleted} disabled={completedCount === 0}>
+            <X />
+            清空已完成
+          </Button>
+          <Button variant="ghost" onClick={clearSelection} disabled={selected.size === 0}>
+            取消选择
+          </Button>
+          <Button
+            variant="outline"
+            onClick={async () => {
+              const r = await window.electronAPI.rescanDownloads();
+              await refresh();
+              showToast(r && r.success
+                ? (r.count > 0 ? `已从磁盘补回 ${r.count} 条下载记录` : '没有发现未登记的文件')
+                : '扫描失败');
+            }}
+            title="扫描下载目录，把磁盘上已有但列表里没有的文件补登记回来"
+          >
+            <RefreshCw />
+            扫描目录补登记
+          </Button>
+          {seriesList.length > 0 && (
+            <div className="ml-auto flex items-center gap-2">
+              <Select value={mergeSeriesId} onValueChange={setMergeSeriesId}>
+                <SelectTrigger className="w-56" title="选择要合并的短剧">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {seriesList.map((s) => (
+                    <SelectItem key={s.series_id} value={String(s.series_id)}>
+                      {s.series_title}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <Button
+                variant="outline"
+                onClick={() => setMergeAsk(true)}
+                disabled={merging}
+                title="把该剧已下载的分集合并成单个 mp4"
+              >
+                <Layers />
+                {merging ? '合并中...' : '一键合并本剧'}
+              </Button>
+            </div>
+          )}
+        </CardContent>
+      </Card>
 
       {/* 合并任务 */}
       {mergeTasks.length > 0 && (
-        <div className="merge-list">
+        <div className="flex flex-col gap-2">
           {mergeTasks.map((m) => (
-            <div key={m.id} className={`merge-card merge-${m.status}`}>
-              <Layers size={16} />
-              <div className="merge-body">
-                <div className="merge-title">
-                  合并《{m.seriesTitle}》· {m.done || 0}/{m.total} 集
-                </div>
-                <div className="merge-sub">
-                  {m.status === 'running' && <>正在合并… {m.progress || 0}%</>}
-                  {m.status === 'completed' && (
-                    <>
-                      已完成 · {m.outputName}
-                      {m.outputBytes ? ` · ${(m.outputBytes / 1073741824).toFixed(2)} GB` : ''}
-                    </>
-                  )}
-                  {m.status === 'failed' && <>失败：{m.error}</>}
-                  {m.status === 'stopped' && <>已取消</>}
-                </div>
-                {(m.status === 'running') && (
-                  <div className="dm-progress">
-                    <div className="dm-progress-bar">
-                      <div className="dm-progress-fill" style={{ width: `${m.progress || 0}%` }} />
+            <Card key={m.id}>
+              <CardContent className="flex items-center gap-3">
+                <Layers className="size-4 shrink-0 text-muted-foreground" />
+                <div className="grid flex-1 gap-1">
+                  <p className="text-sm font-medium">
+                    合并《{m.seriesTitle}》· {m.done || 0}/{m.total} 集
+                  </p>
+                  <p className="text-xs text-muted-foreground">
+                    {m.status === 'running' && `正在合并… ${m.progress || 0}%`}
+                    {m.status === 'completed' &&
+                      `已完成 · ${m.outputName}${
+                        m.outputBytes ? ` · ${(m.outputBytes / 1073741824).toFixed(2)} GB` : ''
+                      }`}
+                    {m.status === 'failed' && `失败：${m.error}`}
+                    {m.status === 'stopped' && '已取消'}
+                  </p>
+                  {m.status === 'running' && (
+                    <div className="flex items-center gap-2">
+                      <Progress value={m.progress || 0} className="h-1.5" />
+                      <span className="w-10 shrink-0 text-right text-xs text-muted-foreground">
+                        {m.progress || 0}%
+                      </span>
                     </div>
-                    <span className="dm-pct">{m.progress || 0}%</span>
-                  </div>
-                )}
-              </div>
-              <div className="merge-actions">
-                {m.status === 'running' && (
-                  <button className="icon-btn" title="取消合并" onClick={() => cancelMerge(m.id)}>
-                    <X size={16} />
-                  </button>
-                )}
-                {m.status === 'completed' && (
-                  <button className="icon-btn" title="打开所在文件夹" onClick={() => openMergedFile(m.output)}>
-                    <Folder size={16} />
-                  </button>
-                )}
-                {m.status !== 'running' && (
-                  <button
-                    className="icon-btn icon-btn-danger"
-                    title="移除记录"
-                    onClick={async () => {
-                      await window.electronAPI.deleteMergeTask(m.id);
-                      loadMergeTasks();
-                    }}
-                  >
-                    <Trash2 size={16} />
-                  </button>
-                )}
-              </div>
-            </div>
+                  )}
+                </div>
+                <div className="flex shrink-0 gap-1">
+                  {m.status === 'running' && (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      title="取消合并"
+                      onClick={() => cancelMerge(m.id)}
+                    >
+                      <X />
+                    </Button>
+                  )}
+                  {m.status === 'completed' && (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      title="打开所在文件夹"
+                      onClick={() => openMergedFile(m.output)}
+                    >
+                      <FolderOpen />
+                    </Button>
+                  )}
+                  {m.status !== 'running' && (
+                    <Button
+                      variant="ghost"
+                      size="icon"
+                      title="移除记录"
+                      onClick={async () => {
+                        await window.electronAPI.deleteMergeTask(m.id);
+                        loadMergeTasks();
+                      }}
+                    >
+                      <Trash2 />
+                    </Button>
+                  )}
+                </div>
+              </CardContent>
+            </Card>
           ))}
         </div>
       )}
 
       {queue.active > 0 && (
-        <div className="dm-queue-bar">
-          <span className="dm-queue-running">
-            <span className="dm-queue-pulse" />
+        <Alert>
+          <AlertDescription>
             正在并发下载 <b>{queue.active}</b> / {queue.maxConcurrent}
-            {queue.queued > 0 ? <> · 队列等待 <b>{queue.queued}</b></> : null}
-          </span>
-          <span className="dm-queue-hint">
-            并发数可在「设置 → 最大并发下载数」调整
-          </span>
-        </div>
+            {queue.queued > 0 ? ` · 队列等待 ${queue.queued}` : ''} —— 并发数可在「设置 → 最大并发下载数」调整
+          </AlertDescription>
+        </Alert>
       )}
 
       {retryableSelectedCount > 0 && (
-        <div className="dm-hint">
-          已选中 <b>{retryableSelectedCount}</b> 个失败项，点
-          <b>「重试选中」</b> 即会重新下载（无需重新解析）。
-        </div>
+        <Alert>
+          <AlertDescription>
+            已选中 <b>{retryableSelectedCount}</b> 个失败项，点「重试选中」即会重新下载（无需重新解析）。
+          </AlertDescription>
+        </Alert>
       )}
 
       {sortedTasks.length === 0 ? (
-        <div className="dm-empty">
-          <Download size={40} />
-          <p>暂无下载任务</p>
-          <p className="dm-empty-sub">前往「红果下载」解析短剧并提交下载</p>
+        <div className="flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed py-16 text-muted-foreground">
+          <Download className="size-10" />
+          <p className="text-sm">暂无下载任务</p>
+          <p className="text-xs">前往「红果下载」解析短剧并提交下载</p>
         </div>
       ) : (
-        <div className="dm-list">
-          {sortedTasks.map((task) => {
-
-            const isSel = selected.has(task.id);
-            const isActive = task.status === 'downloading' || task.status === 'pending';
-            const canStop = task.status === 'downloading';
-            const canRetry = task.status === 'failed' || task.status === 'stopped';
-            const pct = task.progress || 0;
-            return (
-              <div key={task.id} className={`dm-task ${isSel ? 'selected' : ''}`} onClick={() => toggleSelect(task.id)}>
-                <div className="dm-task-cover">
-                  {task.videoInfo && task.videoInfo.cover ? (
-                    <img src={task.videoInfo.cover} alt="" />
-                  ) : (
-                    <div className="cover-placeholder"><Film size={18} /></div>
-                  )}
-                </div>
-                <div className="dm-task-body">
-                  <div className="dm-task-title">{task.title || task.filename}</div>
-                  <div className="dm-task-meta">
-                    <span className={`status-tag status-${task.status}`}>{STATUS_TEXT[task.status] || task.status}</span>
-                    {task.status === 'downloading' && task.totalBytes > 0 && (
-                      <span className="dm-size">{fmtBytes(task.receivedBytes)} / {fmtBytes(task.totalBytes)}</span>
-                    )}
-                    {task.status === 'failed' && task.error && <span className="dm-error">{task.error}</span>}
-                  </div>
-                  {(task.status === 'downloading' || task.status === 'pending') && (
-                    <div className="dm-progress">
-                      <div className="dm-progress-bar">
-                        <div className="dm-progress-fill" style={{ width: pct + '%' }}></div>
-                      </div>
-                      <span className="dm-pct">{pct}%</span>
-                    </div>
-                  )}
-                </div>
-                <div className="dm-task-actions" onClick={(e) => e.stopPropagation()}>
-                  {canStop && (
-                    <button className="icon-btn" title="停止" onClick={() => { window.electronAPI.stopDownload(task.id); refresh(); }}>
-                      <Square size={16} />
-                    </button>
-                  )}
-                  {canRetry && (
-                    <button className="icon-btn" title="重试" onClick={() => { window.electronAPI.retryTask(task.id); }}>
-                      <RefreshCw size={16} />
-                    </button>
-                  )}
-                  <button className="icon-btn" title="打开文件夹" onClick={() => window.electronAPI.openFolder(task.id)}>
-                    <Folder size={16} />
-                  </button>
-                  <button
-                    className="icon-btn icon-btn-danger"
-                    title="删除任务（可选是否同时删除本地文件）"
-                    onClick={() => {
-                      askDelete([task], `删除《${task.hongguoInfo && task.hongguoInfo.series_title ? task.hongguoInfo.series_title : ''}》第 ${task.hongguoInfo ? task.hongguoInfo.vid_index : ''} 集任务`);
-                    }}
-                  >
-                    <Trash2 size={16} />
-                  </button>
-                </div>
-              </div>
-            );
-          })}
-        </div>
-      )}
-
-      {toast && (
-        <div className={`dm-toast dm-toast-${toast.type}`} onClick={() => setToast(null)}>
-          {toast.text}
-        </div>
+        <Card>
+          <CardContent className="px-0">
+            <Table>
+              <TableHeader>
+                <TableRow>
+                  <TableHead className="w-10">
+                    <Checkbox
+                      aria-label="全选"
+                      checked={selected.size > 0 && selected.size === sortedTasks.length}
+                      onCheckedChange={(checked) =>
+                        setSelected(checked ? new Set(sortedTasks.map((t) => t.id)) : new Set())
+                      }
+                    />
+                  </TableHead>
+                  <TableHead>剧集</TableHead>
+                  <TableHead className="w-24">状态</TableHead>
+                  <TableHead className="w-64">进度</TableHead>
+                  <TableHead className="w-36 text-end">操作</TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {sortedTasks.map((task) => {
+                  const isSel = selected.has(task.id);
+                  const canStop = task.status === 'downloading';
+                  const canRetry = task.status === 'failed' || task.status === 'stopped';
+                  const pct = task.progress || 0;
+                  return (
+                    <TableRow key={task.id} data-state={isSel ? 'selected' : undefined}>
+                      <TableCell>
+                        <Checkbox
+                          aria-label="选择任务"
+                          checked={isSel}
+                          onCheckedChange={() => toggleSelect(task.id)}
+                        />
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex items-center gap-3">
+                          <div className="grid aspect-3/4 w-9 shrink-0 place-items-center overflow-hidden rounded border bg-muted text-muted-foreground">
+                            {task.videoInfo && task.videoInfo.cover ? (
+                              <img src={task.videoInfo.cover} alt="" className="size-full object-cover" />
+                            ) : (
+                              <Film className="size-4" />
+                            )}
+                          </div>
+                          <span className="truncate font-medium">
+                            {task.title || task.filename}
+                          </span>
+                        </div>
+                      </TableCell>
+                      <TableCell>
+                        <Badge variant={STATUS_BADGE[task.status] || 'secondary'}>
+                          {STATUS_TEXT[task.status] || task.status}
+                        </Badge>
+                      </TableCell>
+                      <TableCell>
+                        {(task.status === 'downloading' || task.status === 'pending') && (
+                          <div className="flex items-center gap-2">
+                            <Progress value={pct} className="h-1.5" />
+                            <span className="w-9 shrink-0 text-xs tabular-nums text-muted-foreground">
+                              {pct}%
+                            </span>
+                          </div>
+                        )}
+                        {task.status === 'downloading' && task.totalBytes > 0 && (
+                          <p className="mt-1 text-xs tabular-nums text-muted-foreground">
+                            {fmtBytes(task.receivedBytes)} / {fmtBytes(task.totalBytes)}
+                          </p>
+                        )}
+                        {task.status === 'failed' && task.error && (
+                          <p className="text-xs text-destructive">{task.error}</p>
+                        )}
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex justify-end gap-1">
+                          {canStop && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              title="停止"
+                              onClick={() => {
+                                window.electronAPI.stopDownload(task.id);
+                                refresh();
+                              }}
+                            >
+                              <Square />
+                            </Button>
+                          )}
+                          {canRetry && (
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              title="重试"
+                              onClick={() => window.electronAPI.retryTask(task.id)}
+                            >
+                              <RefreshCw />
+                            </Button>
+                          )}
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            title="打开文件夹"
+                            onClick={() => window.electronAPI.openFolder(task.id)}
+                          >
+                            <FolderOpen />
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            title="删除任务（可选是否同时删除本地文件）"
+                            onClick={() =>
+                              askDelete(
+                                [task],
+                                `删除《${
+                                  task.hongguoInfo && task.hongguoInfo.series_title
+                                    ? task.hongguoInfo.series_title
+                                    : ''
+                                }》第 ${task.hongguoInfo ? task.hongguoInfo.vid_index : ''} 集任务`
+                              )
+                            }
+                          >
+                            <Trash2 className="text-destructive" />
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          </CardContent>
+        </Card>
       )}
 
       {/* 合并格式选择 */}
-      {mergeAsk && (
-        <div className="player-confirm-mask" onClick={() => setMergeAsk(false)}>
-          <div className="player-confirm" onClick={(e) => e.stopPropagation()}>
-            <div className="player-confirm-title" style={{ color: 'var(--accent)' }}>
-              <Layers size={17} />
-              合并导出全集
-            </div>
-            <div className="player-confirm-msg">
-              <p>把该剧已下载的分集合并为一个 mp4。</p>
-              <p><b>快速合并</b>：原画质直接拼接，秒级完成，但格式仍是 HEVC —— 在部分电脑上可能黑屏有声。</p>
-              <p><b>兼容合并</b>：转码为 H.264，任何电脑/播放器都能播，但速度慢（约每分钟视频需数秒）。</p>
-            </div>
-            <div className="player-confirm-foot">
-              <button className="btn btn-outline" onClick={() => setMergeAsk(false)}>取消</button>
-              <button className="btn btn-outline" onClick={() => doMerge(true)} disabled={merging}>
-                兼容合并（H.264）
-              </button>
-              <button className="btn btn-primary" onClick={() => doMerge(false)} disabled={merging}>
-                快速合并
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <AlertDialog open={mergeAsk} onOpenChange={setMergeAsk}>
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>合并导出全集</AlertDialogTitle>
+            <AlertDialogDescription className="grid gap-2">
+              <span>把该剧已下载的分集合并为一个 mp4。</span>
+              <span>
+                <b>快速合并</b>：原画质直接拼接，秒级完成，但格式仍是 HEVC —— 在部分电脑上可能黑屏有声。
+              </span>
+              <span>
+                <b>兼容合并</b>：转码为 H.264，任何电脑/播放器都能播，但速度慢（约每分钟视频需数秒）。
+              </span>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <Button variant="outline" onClick={() => doMerge(true)} disabled={merging}>
+              兼容合并（H.264）
+            </Button>
+            <AlertDialogAction onClick={() => doMerge(false)} disabled={merging}>
+              快速合并
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
 
       {/* 删除确认（可选是否连本地文件一起删） */}
-      {confirmAsk && (
-        <div className="player-confirm-mask" onClick={() => setConfirmAsk(null)}>
-          <div className="player-confirm" onClick={(e) => e.stopPropagation()}>
-            <div className="player-confirm-title">
-              <Trash2 size={17} />
-              {confirmAsk.title}
-            </div>
-            <div className="player-confirm-msg">
-              <p>共 {confirmAsk.count} 个任务，其中 {confirmAsk.withFile} 个已下载完成
-                {confirmAsk.estBytes > 0 ? `（约 ${fmtSize(confirmAsk.estBytes)}）` : ''}。</p>
-              <label className="dm-confirm-check">
-                <input
-                  type="checkbox"
-                  checked={!!confirmAsk._del}
-                  onChange={(e) => setConfirmAsk({ ...confirmAsk, _del: e.target.checked })}
-                />
+      <AlertDialog
+        open={Boolean(confirmAsk)}
+        onOpenChange={(open) => {
+          if (!open) setConfirmAsk(null);
+        }}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>{confirmAsk && confirmAsk.title}</AlertDialogTitle>
+            <AlertDialogDescription asChild>
+              <div className="grid gap-3">
                 <span>
-                  同时删除本地文件
-                  {confirmAsk.estBytes > 0 ? `（释放约 ${fmtSize(confirmAsk.estBytes)}）` : ''}
+                  共 {confirmAsk && confirmAsk.count} 个任务，其中{' '}
+                  {confirmAsk && confirmAsk.withFile} 个已下载完成
+                  {confirmAsk && confirmAsk.estBytes > 0
+                    ? `（约 ${fmtBytes(confirmAsk.estBytes)}）`
+                    : ''}
+                  。
                 </span>
-              </label>
-              <p className="dm-confirm-hint">
-                不勾选则只移除任务记录，磁盘上的视频文件会保留（可在文件管理器里自行管理）。
-              </p>
-            </div>
-            <div className="player-confirm-foot">
-              <button className="btn btn-outline" onClick={() => setConfirmAsk(null)}>取消</button>
-              <button
-                className={`btn ${confirmAsk._del ? 'btn-danger-solid' : 'btn-primary'}`}
-                onClick={async () => {
-                  const fn = confirmAsk.onOk;
-                  const del = !!confirmAsk._del;
-                  setConfirmAsk(null);
-                  await fn(del);
-                }}
-              >
-                {confirmAsk._del ? '删除任务和文件' : '仅删除记录'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+                <Label className="flex cursor-pointer items-center gap-2 font-normal">
+                  <Checkbox
+                    checked={Boolean(confirmAsk && confirmAsk._del)}
+                    onCheckedChange={(v) => setConfirmAsk({ ...confirmAsk, _del: v })}
+                  />
+                  <span>
+                    同时删除本地文件
+                    {confirmAsk && confirmAsk.estBytes > 0
+                      ? `（释放约 ${fmtBytes(confirmAsk.estBytes)}）`
+                      : ''}
+                  </span>
+                </Label>
+                <span>
+                  不勾选则只移除任务记录，磁盘上的视频文件会保留（可在文件管理器里自行管理）。
+                </span>
+              </div>
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={async () => {
+                const fn = confirmAsk.onOk;
+                const del = Boolean(confirmAsk._del);
+                setConfirmAsk(null);
+                await fn(del);
+              }}
+            >
+              {confirmAsk && confirmAsk._del ? '删除任务和文件' : '仅删除记录'}
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
   );
 }

@@ -352,12 +352,17 @@ Chromium 对超长 HEVC 视频的 seek 支持有限。合并文件本身是完�
 │                                 #   在线播放内存流、兼容转码、文件清理
 ├── preload.js                    # IPC 通信桥（contextBridge）
 ├── index.html                    # 渲染进程入口
-├── vite.config.js
+├── vite.config.mjs               # Vite + Tailwind v4 + @ 别名
 ├── src/
-│   ├── App.jsx                   # 主界面与侧边栏导航
+│   ├── App.jsx                   # 页面路由与整体布局装配
 │   ├── main.jsx
-│   ├── index.css                 # 全局样式与主题变量
 │   ├── store.js                  # 本地持久化（设置 / 任务 / 剧集档案 / 播放进度 / 合并记录）
+│   ├── styles/
+│   │   ├── index.css             # Tailwind 入口与基础层
+│   │   └── theme.css             # shadcn 设计令牌（oklch 亮/暗主题、中文字体栈）
+│   ├── lib/utils.ts              # cn()：Tailwind 类名合并
+│   ├── context/theme-provider.tsx# 亮/暗主题（偏好存 localStorage，Electron 无 cookie）
+│   ├── hooks/use-mobile.tsx      # 窄屏判定
 │   ├── native/
 │   │   ├── hongguo.js            # 核心协议：API 解析、spade_a 密钥派生、
 │   │   │                         #   CENC-AES-CTR 解密（文件版 + 内存版）
@@ -378,7 +383,10 @@ Chromium 对超长 HEVC 视频的 seek 支持有限。合并文件本身是完�
 │       ├── Player.jsx            # 播放器：本地/在线播放、连播、兼容模式、剧集管理
 │       ├── DownloadManager.jsx   # 下载管理：队列、进度、合并、删除、补登记
 │       ├── Settings.jsx          # 设置：目录、命名、并发、代理
-│       └── icons.jsx             # SVG 图标库
+│       ├── theme-switch.tsx      # 亮/暗主题切换
+│       ├── skip-to-main.tsx      # 键盘「跳到主内容」
+│       ├── layout/               # 应用外壳：侧边栏、顶栏、内容区、导航表
+│       └── ui/                   # shadcn/ui 基础组件（Radix + CVA + Tailwind）
 ├── scripts/
 │   ├── dev.js                    # 开发模式启动器（Vite + Electron）
 │   ├── setup-ffmpeg.js           # 下载内置 ffmpeg（不入库）
